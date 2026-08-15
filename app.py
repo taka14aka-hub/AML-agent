@@ -94,7 +94,7 @@ if prompt := st.chat_input("Например: Проведи аудит разд
         # Вызов модели
         with st.chat_message("assistant"):
             model = genai.GenerativeModel(
-                model_name="gemini-1.5-pro",
+                model_name="gemini-1.5-flash",
                 system_instruction=system_instruction
             )
             
