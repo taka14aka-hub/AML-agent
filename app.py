@@ -34,29 +34,36 @@ if "uploaded_file_names" not in st.session_state:
 
 # Загрузчик файлов
 st.subheader("📂 База знаний")
-uploaded_files = st.file_uploader("Загрузите исторические ПВК и нормативные акты", accept_multiple_files=True)
+# Инициализация состояния сессии
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "gemini_files" not in st.session_state:
+    st.session_state.gemini_files = []
+if "uploaded_file_names" not in st.session_state:
+    st.session_state.uploaded_file_names = set()
 
-if api_key and uploaded_files:
-    with st.spinner("Загрузка и индексация документов в защищенное хранилище..."):
-        for uploaded_file in uploaded_files:
-            if uploaded_file.name not in st.session_state.uploaded_file_names:
-                # Сохраняем во временный файл для передачи в Gemini API
-                with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
-                    tmp_file.write(uploaded_file.getvalue())
-                    tmp_file_path = tmp_file.name
-                
-                # Загружаем файл в Gemini
-                try:
-                    gemini_file = genai.upload_file(path=tmp_file_path, display_name=uploaded_file.name)
-                    st.session_state.gemini_files.append(gemini_file)
-                    st.session_state.uploaded_file_names.add(uploaded_file.name)
-                except Exception as e:
-                    st.error(f"Ошибка загрузки файла {uploaded_file.name}: {e}")
-                finally:
-                    os.remove(tmp_file_path)
+# Автоматическая загрузка всех PDF из репозитория
+import glob
+
+if not st.session_state.gemini_files:
+    with st.spinner("Синхронизация нормативной базы с памятью агента..."):
+        # Ищем все PDF-файлы, которые лежат рядом с кодом
+        pdf_files = glob.glob("*.pdf")
         
-        if st.session_state.gemini_files:
-            st.success(f"В базе знаний агента файлов: {len(st.session_state.gemini_files)}")
+        if pdf_files:
+            for file_path in pdf_files:
+                if file_path not in st.session_state.uploaded_file_names:
+                    try:
+                        gemini_file = genai.upload_file(path=file_path)
+                        st.session_state.gemini_files.append(gemini_file)
+                        st.session_state.uploaded_file_names.add(file_path)
+                    except Exception as e:
+                        st.error(f"Ошибка загрузки файла {file_path}: {e}")
+            st.success(f"Автоматически загружено документов: {len(st.session_state.gemini_files)}")
+        else:
+            st.info("Пока нет базовых документов. Загрузите PDF-файлы в ваш репозиторий на GitHub.")
+else:
+    st.success(f"В базе знаний агента активных документов: {len(st.session_state.gemini_files)}")
 
 st.divider()
 
