@@ -15,6 +15,7 @@ with st.sidebar:
     st.header("⚙️ Настройки API")
     api_key = st.text_input("Введите ваш Gemini API Key", type="password")
     if api_key:
+        api_key = api_key.strip()
         genai.configure(api_key=api_key)
         st.success("API ключ установлен!")
     else:
