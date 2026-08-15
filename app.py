@@ -9,20 +9,21 @@ st.set_page_config(page_title="AML Агент - РК", page_icon="🛡️", layo
 st.title("🛡️ ИИ-Агент по AML Комплаенсу (Республика Казахстан)")
 st.markdown("Рабочее пространство для аудита, актуализации и составления Правил внутреннего контроля (ПВК) на базе законодательства РК.")
 
-# Боковая панель для настроек
+# Автоматическое подключение ключа из секретов
+try:
+    api_key = st.secrets["GEMINI_API_KEY"]
+    genai.configure(api_key=api_key)
+except KeyError:
+    st.error("API ключ не найден в секретах Streamlit!")
+    st.stop()
+
+# Боковая панель для статуса
 with st.sidebar:
-    st.header("⚙️ Настройки API")
-    api_key = st.text_input("Введите ваш Gemini API Key", type="password")
-    if api_key:
-        genai.configure(api_key=api_key)
-        st.success("API ключ установлен!")
-    else:
-        st.warning("Для работы агента требуется API ключ от Google AI Studio.")
-    
+    st.header("⚙️ Статус агента")
+    st.success("API ключ подключен автоматически! 🟢")
     st.divider()
     st.markdown("### 📚 Инструкция:")
-    st.markdown("1. Вставьте API ключ.\n2. Загрузите файлы ПВК и нормативной базы (PDF, DOCX).\n3. Напишите запрос в чат (например, 'Проверь раздел KYC на соответствие Закону о ПОД/ФТ').")
-
+    st.markdown("1. Загрузите файлы ПВК и нормативной базы (PDF).\n2. Напишите запрос в чат (например, 'Проверь раздел KYC на соответствие Закону о ПОД/ФТ').
 # Инициализация состояния сессии
 if "messages" not in st.session_state:
     st.session_state.messages = []
