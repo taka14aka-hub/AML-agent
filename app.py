@@ -133,13 +133,26 @@ else:
         st.error("Файл courses.json не найден. Пожалуйста, создайте его в репозитории.")
         st.stop()
         
-    # Динамический список курсов из базы
+   # Динамический список курсов из базы
     course_list = list(courses_db.keys())
+    
+    # --- НОВЫЙ БЛОК: ОТСЛЕЖИВАНИЕ СМЕНЫ КУРСА ---
+    if "selected_course" not in st.session_state:
+        st.session_state.selected_course = course_list[0] if course_list else ""
+
     course_topic = st.selectbox("Выберите курс для изучения:", course_list)
+    
+    # Если пользователь выбрал другую тему в списке — сбрасываем прогресс
+    if course_topic != st.session_state.selected_course:
+        st.session_state.selected_course = course_topic
+        st.session_state.current_module = 1
+        st.session_state.course_passed = False
+        st.session_state.module_content = ""
+        st.rerun() 
+    # ---------------------------------------------
     
     if course_topic:
         if not st.session_state.course_passed:
-            st.info(f"📚 Модуль {st.session_state.current_module} из 3.")
             
             # 2. МГНОВЕННАЯ ЗАГРУЗКА ТЕОРИИ (БЕЗ ЛИМИТОВ API)
             current_mod_str = str(st.session_state.current_module)
