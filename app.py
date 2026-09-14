@@ -120,3 +120,95 @@ if prompt := st.chat_input("Например: Проведи аудит разд
                     st.session_state.messages.append({"role": "assistant", "content": response.text})
                 except Exception as e:
                     st.error(f"Произошла ошибка при генерации ответа: {e}")
+                    import streamlit as st
+from fpdf import FPDF
+import base64
+
+# --- ГЕНЕРАТОР СЕРТИФИКАТОВ ---
+def create_pdf_certificate(course_name, student_name="Талгат Омиржанов"):
+    pdf = FPDF()
+    pdf.add_page()
+    # В реальном проекте сюда загружается шрифт с кириллицей, пока используем стандартный
+    pdf.set_font("helvetica", "B", 16)
+    pdf.cell(0, 20, "CERTIFICATE OF COMPLETION", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("helvetica", "", 14)
+    pdf.cell(0, 10, f"Awarded to: {student_name}", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, f"Course: {course_name}", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, "Status: Successfully completed all modules and tests.", align="C")
+    return pdf.output(dest="S").encode("latin-1")
+
+# --- ИНИЦИАЛИЗАЦИЯ ПАМЯТИ ОБУЧЕНИЯ ---
+if "current_module" not in st.session_state:
+    st.session_state.current_module = 1
+if "course_passed" not in st.session_state:
+    st.session_state.course_passed = False
+
+# --- БОКОВАЯ ПАНЕЛЬ ---
+with st.sidebar:
+    st.header("⚙️ Режим работы")
+    task_mode = st.selectbox(
+        "Выберите задачу:",
+        ("Аудит ПВК и регламентов", "Ответ на запрос/жалобу АРРФР", "🎓 Обучающий тренажер (Крипто)")
+    )
+    st.divider()
+
+# --- ЛОГИКА РЕЖИМОВ ---
+if task_mode != "🎓 Обучающий тренажер (Крипто)":
+    # Здесь остается ваш старый код для аудита и АРРФР
+    st.write(f"Активен режим: {task_mode}")
+    # ... (ваш текущий код чата с ИИ) ...
+
+else:
+    # НОВЫЙ РЕЖИМ: ТРЕНАЖЕР
+    st.title("🎓 Тренажер по крипто-комплаенсу")
+    
+    course_topic = st.text_input("Введите тему (например, 'Travel Rule для криптобирж'):")
+    
+    if course_topic:
+        if not st.session_state.course_passed:
+            st.info(f"📚 Модуль {st.session_state.current_module}. Изучите теорию и ответьте на вопросы.")
+            
+            # Поле для общения с ИИ-преподавателем
+            user_answer = st.text_area("Ваши ответы на 3 вопроса:")
+            
+            if st.button("Проверить ответы"):
+                # Отправляем ответы в Gemini (здесь нужна ваша функция вызова модели)
+                prompt = f"""
+                Я прохожу курс '{course_topic}'. Это Модуль {st.session_state.current_module}.
+                Оцени мои ответы: {user_answer}. 
+                Если все 3 ответа правильные, напиши слово ПРИНЯТО и переводи на следующий модуль.
+                Если есть ошибки, объясни их и задай вопросы заново.
+                """
+                # Имитация ответа от Gemini для примера
+                st.write("🤖 *Агент анализирует ваши ответы...*")
+                
+                # Заглушка логики: если вы ввели правильные ответы, повышаем модуль
+                # В реальности здесь ИИ будет проверять наличие слова ПРИНЯТО
+                if "принято" in user_answer.lower(): 
+                    st.success("Отлично! Переходим к следующему этапу.")
+                    if st.session_state.current_module >= 3:
+                        st.session_state.course_passed = True
+                        st.rerun()
+                    else:
+                        st.session_state.current_module += 1
+                        st.rerun()
+                else:
+                    st.error("В ответах есть ошибки. Попробуйте еще раз!")
+        
+        else:
+            # ФИНАЛ КУРСА
+            st.success("🎉 Поздравляем! Вы успешно завершили все модули курса.")
+            
+            # Генерация и скачивание PDF
+            pdf_bytes = create_pdf_certificate(course_topic)
+            st.download_button(
+                label="📥 Скачать сертификат (PDF)",
+                data=pdf_bytes,
+                file_name="Crypto_Compliance_Certificate.pdf",
+                mime="application/pdf"
+            )
+            
+            if st.button("Начать новый курс"):
+                st.session_state.current_module = 1
+                st.session_state.course_passed = False
+                st.rerun()
