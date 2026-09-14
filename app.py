@@ -136,17 +136,19 @@ else:
             # Шаг 1: Генерация теории
             if not st.session_state.module_content:
                 with st.spinner("Агент разрабатывает учебный материал..."):
-                    prompt_generate = f"""
-                    Ты — строгий преподаватель по AML. Разработай Модуль {st.session_state.current_module} для курса "{course_topic}".
-                    Выдай ответ:
-                    1. Короткую теорию (3-4 абзаца).
-                    2. Заголовок "Проверочные вопросы" и 3 вопроса по тексту.
-                    """
-                    response = trainer_model.generate_content(prompt_generate)
-                    st.session_state.module_content = response.text
-                    st.rerun()
-            
-            st.markdown(st.session_state.module_content)
+                    try:
+                        prompt_generate = f"""
+                        Ты — строгий преподаватель по AML. Разработай Модуль {st.session_state.current_module} для курса "{course_topic}".
+                        Выдай ответ:
+                        1. Короткую теорию (3-4 абзаца).
+                        2. Заголовок "Проверочные вопросы" и 3 вопроса по тексту.
+                        """
+                        response = trainer_model.generate_content(prompt_generate)
+                        st.session_state.module_content = response.text
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Сработал лимит Google. Серверу нужно отдохнуть от наших тестов. Подождите около минуты и просто обновите страницу. (Деталь: {e})")
+                        st.stop() # Останавливаем код, чтобы он не пытался показать пустой экран
             
             # Шаг 2: Проверка ответов
             user_answer = st.text_area("Введите ваши ответы на 3 вопроса:")
