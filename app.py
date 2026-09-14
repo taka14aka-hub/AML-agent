@@ -3,6 +3,7 @@ import google.generativeai as genai
 import glob
 from fpdf import FPDF
 import base64
+import json
 
 # --- НАСТРОЙКА СТРАНИЦЫ И API ---
 st.set_page_config(page_title="AML Агент - РК", page_icon="🛡️", layout="wide")
@@ -119,50 +120,59 @@ if task_mode in ["Аудит ПВК и регламентов", "Ответ на
                 except Exception as e:
                     st.error(f"Ошибка генерации ответа: {e}")
 
-# --- ЛОГИКА 2: ОБУЧАЮЩИЙ ТРЕНАЖЕР ---
+# --- ЛОГИКА 2: ОБУЧАЮЩИЙ ТРЕНАЖЕР (СТАТИЧНАЯ БАЗА) ---
 else:
-    st.title("🎓 Тренажер по комплаенсу")
-    st.markdown("Введите тему курса, и ИИ сгенерирует для вас учебные материалы и проверочные вопросы.")
+    st.title("🎓 Тренажер по комплаенсу (Offline-база)")
+    st.markdown("Теория загружается моментально из базы. ИИ используется только для проверки ответов!")
     
-    # Инициализируем модель специально для тренажера
-    trainer_model = genai.GenerativeModel("gemini-3.7-flash")
-    
-    course_topic = st.text_input("Введите тему (например, 'Travel Rule для криптобирж'):")
+    # 1. Загрузка базы курсов из файла
+    try:
+        with open("courses.json", "r", encoding="utf-8") as f:
+            courses_db = json.load(f)
+    except FileNotFoundError:
+        st.error("Файл courses.json не найден. Пожалуйста, создайте его в репозитории.")
+        st.stop()
+        
+    # Динамический список курсов из базы
+    course_list = list(courses_db.keys())
+    course_topic = st.selectbox("Выберите курс для изучения:", course_list)
     
     if course_topic:
         if not st.session_state.course_passed:
             st.info(f"📚 Модуль {st.session_state.current_module} из 3.")
             
-            # Шаг 1: Генерация теории
-            if not st.session_state.module_content:
-                with st.spinner("Агент разрабатывает учебный материал..."):
-                    try:
-                        prompt_generate = f"""
-                        Ты — строгий преподаватель по AML. Разработай Модуль {st.session_state.current_module} для курса "{course_topic}".
-                        Выдай ответ:
-                        1. Короткую теорию (3-4 абзаца).
-                        2. Заголовок "Проверочные вопросы" и 3 вопроса по тексту.
-                        """
-                        response = trainer_model.generate_content(prompt_generate)
-                        st.session_state.module_content = response.text
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Сработал лимит Google. Серверу нужно отдохнуть от наших тестов. Подождите около минуты и просто обновите страницу. (Деталь: {e})")
-                        st.stop() # Останавливаем код, чтобы он не пытался показать пустой экран
+            # 2. МГНОВЕННАЯ ЗАГРУЗКА ТЕОРИИ (БЕЗ ЛИМИТОВ API)
+            current_mod_str = str(st.session_state.current_module)
             
-            # Шаг 2: Проверка ответов
+            if not st.session_state.module_content:
+                # Достаем данные именно для этого модуля
+                module_data = courses_db[course_topic][current_mod_str]
+                theory_text = module_data["Теория"]
+                
+                # Собираем вопросы в красивый список
+                questions_formatted = "\n".join([f"{i+1}. {q}" for i, q in enumerate(module_data["Вопросы"])])
+                
+                # Формируем итоговый текст и сохраняем в память
+                st.session_state.module_content = f"{theory_text}\n\n### Проверочные вопросы:\n{questions_formatted}"
+                st.rerun()
+            
+            # Выводим готовую лекцию на экран
+            st.markdown(st.session_state.module_content)
+            
+            # 3. ПРОВЕРКА ОТВЕТОВ (ЗДЕСЬ РАБОТАЕТ ИИ)
             user_answer = st.text_area("Введите ваши ответы на 3 вопроса:")
             
             if st.button("Отправить на проверку"):
                 if user_answer:
-                    with st.spinner("Проверяю ответы..."):
+                    with st.spinner("Агент проверяет ваши ответы..."):
                         try:
+                            trainer_model = genai.GenerativeModel("gemini-3.7-flash")
                             prompt_check = f"""
                             Студент отвечает на вопросы Модуля {st.session_state.current_module} по теме "{course_topic}".
                             Материал модуля: {st.session_state.module_content}
                             Ответы студента: {user_answer}
                             
-                            Если ВСЕ 3 ответа правильные, начни ответ со слова ПРИНЯТО.
+                            Если ВСЕ 3 ответа правильные по смыслу, начни ответ со слова ПРИНЯТО.
                             Если есть ошибки, объясни их. Слово ПРИНЯТО не пиши!
                             """
                             eval_response = trainer_model.generate_content(prompt_check)
@@ -179,22 +189,20 @@ else:
                                 else:
                                     st.session_state.current_module += 1
                                 
-                                # --- ТОТ САМЫЙ ТАЙМЕР ---
+                                # Короткая пауза для безопасности и автоматический переход
                                 import time
-                                with st.spinner("Охлаждаем серверы Google (15 секунд) перед загрузкой следующего модуля..."):
-                                    time.sleep(15)
-                                st.rerun() # Автоматически переходим дальше без кнопок!
-                                
+                                time.sleep(4)
+                                st.rerun()
                             else:
                                 st.error("Есть ошибки. Изучите комментарии и отправьте заново.")
                                 
                         except Exception as e:
-                            st.error(f"Сработал лимит Google. Подождите 30 секунд и нажмите 'Отправить на проверку' еще раз. Техническая деталь: {e}")
+                            st.error(f"Сервер Google перегружен. Подождите 15-30 секунд и нажмите кнопку снова. (Ошибка: {e})")
                 else:
                     st.warning("Напишите ответы перед отправкой.")
         
         else:
-            # Шаг 3: Финал курса и Сертификат
+            # 4. ФИНАЛ И СЕРТИФИКАТ
             st.success("🎉 Поздравляем! Вы успешно завершили все модули.")
             
             pdf_bytes = create_pdf_certificate(course_topic)
