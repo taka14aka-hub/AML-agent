@@ -179,7 +179,7 @@ else:
                 if user_answer:
                     with st.spinner("Агент проверяет ваши ответы..."):
                         try:
-                            trainer_model = genai.GenerativeModel("gemini-1.5-flash")
+                            trainer_model = genai.GenerativeModel("gemini-pro")
                             prompt_check = f"""
                             Студент отвечает на вопросы Модуля {st.session_state.current_module} по теме "{course_topic}".
                             Материал модуля: {st.session_state.module_content}
