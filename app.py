@@ -142,6 +142,9 @@ if "current_module" not in st.session_state:
     st.session_state.current_module = 1
 if "course_passed" not in st.session_state:
     st.session_state.course_passed = False
+# Добавляем ячейку памяти для текста текущего урока
+if "module_content" not in st.session_state:
+    st.session_state.module_content = ""
 
 # --- БОКОВАЯ ПАНЕЛЬ ---
 with st.sidebar:
@@ -154,49 +157,76 @@ with st.sidebar:
 
 # --- ЛОГИКА РЕЖИМОВ ---
 if task_mode != "🎓 Обучающий тренажер (Крипто)":
-    # Здесь остается ваш старый код для аудита и АРРФР
     st.write(f"Активен режим: {task_mode}")
-    # ... (ваш текущий код чата с ИИ) ...
+    # ... здесь остается ваш старый код для аудита ...
 
 else:
     # НОВЫЙ РЕЖИМ: ТРЕНАЖЕР
-    st.title("🎓 Тренажер по крипто-комплаенсу")
+    st.title("🎓 Тренажер по комплаенсу")
     
     course_topic = st.text_input("Введите тему (например, 'Travel Rule для криптобирж'):")
     
     if course_topic:
         if not st.session_state.course_passed:
-            st.info(f"📚 Модуль {st.session_state.current_module}. Изучите теорию и ответьте на вопросы.")
+            st.info(f"📚 Модуль {st.session_state.current_module} из 3.")
             
-            # Поле для общения с ИИ-преподавателем
-            user_answer = st.text_area("Ваши ответы на 3 вопроса:")
+            # 1. ГЕНЕРАЦИЯ ТЕОРИИ И ВОПРОСОВ (если они еще не созданы)
+            if not st.session_state.module_content:
+                with st.spinner("Агент генерирует материалы курса..."):
+                    prompt_generate = f"""
+                    Ты — строгий преподаватель по AML и комплаенсу. 
+                    Разработай Модуль {st.session_state.current_module} для курса "{course_topic}".
+                    Выдай структурированный ответ:
+                    1. Короткую, но емкую теорию (3-4 абзаца).
+                    2. В конце напиши заголовок "Проверочные вопросы" и задай 3 вопроса по тексту.
+                    """
+                    # Вызываем ИИ для создания модуля
+                    response = model.generate_content(prompt_generate)
+                    st.session_state.module_content = response.text
+                    st.rerun() # Перезагружаем интерфейс, чтобы показать текст
             
-            if st.button("Проверить ответы"):
-                # Отправляем ответы в Gemini (здесь нужна ваша функция вызова модели)
-                prompt = f"""
-                Я прохожу курс '{course_topic}'. Это Модуль {st.session_state.current_module}.
-                Оцени мои ответы: {user_answer}. 
-                Если все 3 ответа правильные, напиши слово ПРИНЯТО и переводи на следующий модуль.
-                Если есть ошибки, объясни их и задай вопросы заново.
-                """
-                # Имитация ответа от Gemini для примера
-                st.write("🤖 *Агент анализирует ваши ответы...*")
-                
-                # Заглушка логики: если вы ввели правильные ответы, повышаем модуль
-                # В реальности здесь ИИ будет проверять наличие слова ПРИНЯТО
-                if "принято" in user_answer.lower(): 
-                    st.success("Отлично! Переходим к следующему этапу.")
-                    if st.session_state.current_module >= 3:
-                        st.session_state.course_passed = True
-                        st.rerun()
-                    else:
-                        st.session_state.current_module += 1
-                        st.rerun()
+            # Выводим сгенерированную теорию на экран
+            st.markdown(st.session_state.module_content)
+            
+            # 2. ПРОВЕРКА ОТВЕТОВ
+            user_answer = st.text_area("Введите ваши ответы на 3 вопроса здесь (можно своими словами):")
+            
+            if st.button("Отправить на проверку"):
+                if user_answer:
+                    with st.spinner("Преподаватель проверяет ответы..."):
+                        prompt_check = f"""
+                        Студент отвечает на вопросы Модуля {st.session_state.current_module} по теме "{course_topic}".
+                        Теория и вопросы были такие: {st.session_state.module_content}
+                        Ответы студента: {user_answer}
+                        
+                        Оцени ответы. Если ВСЕ 3 ответа по смыслу правильные, обязательно напиши в самом начале ответа слово: ПРИНЯТО.
+                        Если есть ошибки, укажи на них, объясни правильный вариант. Слово ПРИНЯТО не пиши!
+                        """
+                        eval_response = model.generate_content(prompt_check)
+                        
+                        st.markdown("### 📝 Комментарий преподавателя:")
+                        st.info(eval_response.text)
+                        
+                        # Если ИИ одобрил ответы
+                        if "ПРИНЯТО" in eval_response.text.upper():
+                            st.success("Отлично! Модуль пройден.")
+                            st.session_state.module_content = "" # Очищаем теорию для нового модуля
+                            
+                            if st.session_state.current_module >= 3:
+                                st.session_state.course_passed = True
+                            else:
+                                st.session_state.current_module += 1
+                                
+                            # Кнопка для перезагрузки страницы и перехода на следующий этап
+                            if st.button("Продолжить обучение"):
+                                st.rerun()
+                        else:
+                            st.error("В ответах есть неточности. Изучите комментарии выше, исправьте ошибки и отправьте заново.")
                 else:
-                    st.error("В ответах есть ошибки. Попробуйте еще раз!")
+                    st.warning("Пожалуйста, напишите ответы перед проверкой.")
         
         else:
-            # ФИНАЛ КУРСА
+            # 3. ФИНАЛ КУРСА
             st.success("🎉 Поздравляем! Вы успешно завершили все модули курса.")
             
             # Генерация и скачивание PDF
@@ -204,11 +234,12 @@ else:
             st.download_button(
                 label="📥 Скачать сертификат (PDF)",
                 data=pdf_bytes,
-                file_name="Crypto_Compliance_Certificate.pdf",
+                file_name="Compliance_Certificate.pdf",
                 mime="application/pdf"
             )
             
             if st.button("Начать новый курс"):
                 st.session_state.current_module = 1
                 st.session_state.course_passed = False
+                st.session_state.module_content = ""
                 st.rerun()
