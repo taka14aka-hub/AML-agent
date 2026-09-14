@@ -154,32 +154,40 @@ else:
             if st.button("Отправить на проверку"):
                 if user_answer:
                     with st.spinner("Проверяю ответы..."):
-                        prompt_check = f"""
-                        Студент отвечает на вопросы Модуля {st.session_state.current_module} по теме "{course_topic}".
-                        Материал модуля: {st.session_state.module_content}
-                        Ответы студента: {user_answer}
-                        
-                        Если ВСЕ 3 ответа правильные, начни ответ со слова ПРИНЯТО.
-                        Если есть ошибки, объясни их. Слово ПРИНЯТО не пиши!
-                        """
-                        eval_response = trainer_model.generate_content(prompt_check)
-                        
-                        st.markdown("### 📝 Комментарий преподавателя:")
-                        st.info(eval_response.text)
-                        
-                        if "ПРИНЯТО" in eval_response.text.upper():
-                            st.success("Отлично! Модуль пройден.")
-                            st.session_state.module_content = "" 
+                        try:
+                            prompt_check = f"""
+                            Студент отвечает на вопросы Модуля {st.session_state.current_module} по теме "{course_topic}".
+                            Материал модуля: {st.session_state.module_content}
+                            Ответы студента: {user_answer}
                             
-                            if st.session_state.current_module >= 3:
-                                st.session_state.course_passed = True
-                            else:
-                                st.session_state.current_module += 1
+                            Если ВСЕ 3 ответа правильные, начни ответ со слова ПРИНЯТО.
+                            Если есть ошибки, объясни их. Слово ПРИНЯТО не пиши!
+                            """
+                            eval_response = trainer_model.generate_content(prompt_check)
+                            
+                            st.markdown("### 📝 Комментарий преподавателя:")
+                            st.info(eval_response.text)
+                            
+                            if "ПРИНЯТО" in eval_response.text.upper():
+                                st.success("Отлично! Модуль пройден.")
+                                st.session_state.module_content = "" 
                                 
-                            if st.button("Продолжить обучение"):
-                                st.rerun()
-                        else:
-                            st.error("Есть ошибки. Изучите комментарии и отправьте заново.")
+                                if st.session_state.current_module >= 3:
+                                    st.session_state.course_passed = True
+                                else:
+                                    st.session_state.current_module += 1
+                                
+                                # --- ТОТ САМЫЙ ТАЙМЕР ---
+                                import time
+                                with st.spinner("Охлаждаем серверы Google (15 секунд) перед загрузкой следующего модуля..."):
+                                    time.sleep(15)
+                                st.rerun() # Автоматически переходим дальше без кнопок!
+                                
+                            else:
+                                st.error("Есть ошибки. Изучите комментарии и отправьте заново.")
+                                
+                        except Exception as e:
+                            st.error(f"Сработал лимит Google. Подождите 30 секунд и нажмите 'Отправить на проверку' еще раз. Техническая деталь: {e}")
                 else:
                     st.warning("Напишите ответы перед отправкой.")
         
