@@ -15,6 +15,31 @@ except KeyError:
     st.error("API ключ не найден в секретах Streamlit! Добавьте его в настройки.")
     st.stop()
 
+# --- АВТОМАТИЧЕСКИЙ ПОИСК РАБОЧЕЙ МОДЕЛИ ---
+@st.cache_resource
+def get_best_model():
+    try:
+        # Запрашиваем у Google список всех доступных моделей для генерации текста
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # Ищем самую быструю и современную (1.5-flash)
+        for m in available_models:
+            if "1.5-flash" in m:
+                return m
+        # Если нет flash, ищем pro
+        for m in available_models:
+            if "pro" in m:
+                return m
+        # Берем первую попавшуюся рабочую, если ничего не подошло
+        if available_models:
+            return available_models[0]
+            
+        return "gemini-1.5-flash" # Жесткий фоллбэк
+    except Exception:
+        return "models/gemini-1.5-flash"
+
+WORKING_MODEL = get_best_model()
+
 # --- ФУНКЦИЯ ГЕНЕРАЦИИ СЕРТИФИКАТА ---
 def create_pdf_certificate(course_name, student_name="Talgat Omirzhanov"):
     pdf = FPDF()
@@ -53,7 +78,8 @@ with st.sidebar:
         "Выберите режим работы:",
         ("Аудит ПВК и регламентов", "Ответ на запрос/жалобу АРРФР", "🎓 Обучающий тренажер (Крипто)")
     )
-    st.success("API ключ подключен автоматически! 🟢")
+    st.success("API ключ подключен! 🟢")
+    st.info(f"Активная модель ИИ:\n**{WORKING_MODEL}**") # Показываем, какую модель нашел код
     st.divider()
 
 # --- ЛОГИКА 1: АУДИТ И АРРФР (СТАНДАРТНЫЙ ЧАТ) ---
@@ -110,8 +136,7 @@ if task_mode in ["Аудит ПВК и регламентов", "Ответ на
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            # Исправлено на 1.5-flash
-            model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=system_instruction)
+            model = genai.GenerativeModel(model_name=WORKING_MODEL, system_instruction=system_instruction)
             contents = st.session_state.gemini_files + [prompt]
             with st.spinner("Анализирую данные..."):
                 try:
@@ -180,8 +205,7 @@ else:
                 if user_answer:
                     with st.spinner("Агент проверяет ваши ответы..."):
                         try:
-                            # Исправлено на 1.5-flash
-                            trainer_model = genai.GenerativeModel("gemini-1.5-flash")
+                            trainer_model = genai.GenerativeModel(WORKING_MODEL)
                             prompt_check = f"""
                             Студент отвечает на вопросы Модуля {st.session_state.current_module} по теме "{course_topic}".
                             Материал модуля: {st.session_state.module_content}
