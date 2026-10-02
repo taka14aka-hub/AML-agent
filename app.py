@@ -2,8 +2,8 @@ import streamlit as st
 import google.generativeai as genai
 import glob
 from fpdf import FPDF
-import base64
 import json
+import time
 
 # --- НАСТРОЙКА СТРАНИЦЫ И API ---
 st.set_page_config(page_title="AML Агент - РК", page_icon="🛡️", layout="wide")
@@ -12,18 +12,25 @@ try:
     api_key = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=api_key)
 except KeyError:
-    st.error("API ключ не найден в секретах Streamlit!")
+    st.error("API ключ не найден в секретах Streamlit! Добавьте его в настройки.")
     st.stop()
 
 # --- ФУНКЦИЯ ГЕНЕРАЦИИ СЕРТИФИКАТА ---
-def create_pdf_certificate(course_name, student_name="Талгат Омиржанов"):
+def create_pdf_certificate(course_name, student_name="Talgat Omirzhanov"):
+    # Используем латиницу, так как стандартные шрифты FPDF не поддерживают кириллицу
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("helvetica", "B", 16)
     pdf.cell(0, 20, "CERTIFICATE OF COMPLETION", align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("helvetica", "", 14)
     pdf.cell(0, 10, f"Awarded to: {student_name}", align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 10, f"Course: {course_name}", align="C", new_x="LMARGIN", new_y="NEXT")
+    
+    # Конвертируем название курса в ascii, игнорируя нечитаемые символы, чтобы избежать краша
+    safe_course_name = course_name.encode('ascii', 'ignore').decode('ascii')
+    if not safe_course_name.strip():
+        safe_course_name = "AML & Compliance Training"
+        
+    pdf.cell(0, 10, f"Course: {safe_course_name}", align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 10, "Status: Successfully completed all modules and tests.", align="C")
     return pdf.output(dest="S").encode("latin-1")
 
@@ -110,7 +117,8 @@ if task_mode in ["Аудит ПВК и регламентов", "Ответ на
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            model = genai.GenerativeModel(model_name="gemini-3.7-flash", system_instruction=system_instruction)
+            # ИСПОЛЬЗУЕМ СТАБИЛЬНУЮ МОДЕЛЬ 1.5-PRO
+            model = genai.GenerativeModel(model_name="gemini-1.5-pro", system_instruction=system_instruction)
             contents = st.session_state.gemini_files + [prompt]
             with st.spinner("Анализирую данные..."):
                 try:
@@ -130,63 +138,72 @@ else:
         with open("courses.json", "r", encoding="utf-8") as f:
             courses_db = json.load(f)
     except FileNotFoundError:
-        st.error("Файл courses.json не найден. Пожалуйста, создайте его в репозитории.")
+        st.error("Файл courses.json не найден. Пожалуйста, создайте его в корневом каталоге проекта.")
+        st.stop()
+    except json.JSONDecodeError:
+        st.error("Ошибка в формате файла courses.json. Убедитесь, что там корректный JSON-код.")
         st.stop()
         
-   # Динамический список курсов из базы
+    # Динамический список курсов из базы
     course_list = list(courses_db.keys())
     
-    # --- НОВЫЙ БЛОК: ОТСЛЕЖИВАНИЕ СМЕНЫ КУРСА ---
+    # Отслеживание смены курса
     if "selected_course" not in st.session_state:
         st.session_state.selected_course = course_list[0] if course_list else ""
 
     course_topic = st.selectbox("Выберите курс для изучения:", course_list)
     
-    # Если пользователь выбрал другую тему в списке — сбрасываем прогресс
+    # Если пользователь выбрал другую тему — сбрасываем прогресс
     if course_topic != st.session_state.selected_course:
         st.session_state.selected_course = course_topic
         st.session_state.current_module = 1
         st.session_state.course_passed = False
         st.session_state.module_content = ""
         st.rerun() 
-    # ---------------------------------------------
     
     if course_topic:
+        # Динамический подсчет модулей в выбранном курсе
+        total_modules = len(courses_db[course_topic].keys())
+        
         if not st.session_state.course_passed:
+            st.info(f"📚 Модуль {st.session_state.current_module} из {total_modules}.")
             
-            # 2. МГНОВЕННАЯ ЗАГРУЗКА ТЕОРИИ (БЕЗ ЛИМИТОВ API)
+            # 2. МГНОВЕННАЯ ЗАГРУЗКА ТЕОРИИ
             current_mod_str = str(st.session_state.current_module)
             
             if not st.session_state.module_content:
-                # Достаем данные именно для этого модуля
-                module_data = courses_db[course_topic][current_mod_str]
-                theory_text = module_data["Теория"]
-                
-                # Собираем вопросы в красивый список
-                questions_formatted = "\n".join([f"{i+1}. {q}" for i, q in enumerate(module_data["Вопросы"])])
-                
-                # Формируем итоговый текст и сохраняем в память
-                st.session_state.module_content = f"{theory_text}\n\n### Проверочные вопросы:\n{questions_formatted}"
-                st.rerun()
+                # Защита от ошибки, если модуля нет в базе
+                if current_mod_str in courses_db[course_topic]:
+                    module_data = courses_db[course_topic][current_mod_str]
+                    theory_text = module_data.get("Теория", "Теория не найдена.")
+                    
+                    questions = module_data.get("Вопросы", [])
+                    questions_formatted = "\n".join([f"{i+1}. {q}" for i, q in enumerate(questions)])
+                    
+                    st.session_state.module_content = f"{theory_text}\n\n### Проверочные вопросы:\n{questions_formatted}"
+                    st.rerun()
+                else:
+                    st.error(f"Модуль {current_mod_str} не найден в файле JSON.")
+                    st.stop()
             
-            # Выводим готовую лекцию на экран
             st.markdown(st.session_state.module_content)
             
-            # 3. ПРОВЕРКА ОТВЕТОВ (ЗДЕСЬ РАБОТАЕТ ИИ)
-            user_answer = st.text_area("Введите ваши ответы на 3 вопроса:")
+            # 3. ПРОВЕРКА ОТВЕТОВ (ИИ)
+            user_answer = st.text_area("Введите ваши ответы на вопросы:")
             
             if st.button("Отправить на проверку"):
                 if user_answer:
                     with st.spinner("Агент проверяет ваши ответы..."):
                         try:
-                            trainer_model = genai.GenerativeModel("gemini-pro")
+                            # ИСПОЛЬЗУЕМ СТАБИЛЬНУЮ МОДЕЛЬ 1.5-PRO
+                            trainer_model = genai.GenerativeModel("gemini-1.5-pro")
                             prompt_check = f"""
                             Студент отвечает на вопросы Модуля {st.session_state.current_module} по теме "{course_topic}".
                             Материал модуля: {st.session_state.module_content}
                             Ответы студента: {user_answer}
                             
-                            Если ВСЕ 3 ответа правильные по смыслу, начни ответ со слова ПРИНЯТО.
-                            Если есть ошибки, объясни их. Слово ПРИНЯТО не пиши!
+                            Твоя задача — проверить правильность. Если ВСЕ ответы верны по смыслу, начни свой ответ со слова ПРИНЯТО.
+                            Если есть ошибки, укажи на них. Слово ПРИНЯТО не пиши!
                             """
                             eval_response = trainer_model.generate_content(prompt_check)
                             
@@ -194,23 +211,22 @@ else:
                             st.info(eval_response.text)
                             
                             if "ПРИНЯТО" in eval_response.text.upper():
-                                st.success("Отлично! Модуль пройден.")
+                                st.success("Отлично! Модуль пройден. Загружаем следующий этап...")
                                 st.session_state.module_content = "" 
                                 
-                                if st.session_state.current_module >= 3:
+                                # Динамическая проверка финала курса
+                                if st.session_state.current_module >= total_modules:
                                     st.session_state.course_passed = True
                                 else:
                                     st.session_state.current_module += 1
                                 
-                                # Короткая пауза для безопасности и автоматический переход
-                                import time
-                                time.sleep(4)
+                                time.sleep(3) # Короткая пауза для безопасности API
                                 st.rerun()
                             else:
                                 st.error("Есть ошибки. Изучите комментарии и отправьте заново.")
                                 
                         except Exception as e:
-                            st.error(f"Сервер Google перегружен. Подождите 15-30 секунд и нажмите кнопку снова. (Ошибка: {e})")
+                            st.error(f"Сервер Google временно недоступен. Подождите 15-30 секунд. (Ошибка: {e})")
                 else:
                     st.warning("Напишите ответы перед отправкой.")
         
