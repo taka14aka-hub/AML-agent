@@ -15,30 +15,8 @@ except KeyError:
     st.error("API ключ не найден в секретах Streamlit! Добавьте его в настройки.")
     st.stop()
 
-# --- АВТОМАТИЧЕСКИЙ ПОИСК РАБОЧЕЙ МОДЕЛИ ---
-@st.cache_resource
-def get_best_model():
-    try:
-        # Запрашиваем у Google список всех доступных моделей для генерации текста
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # Ищем самую быструю и современную (1.5-flash)
-        for m in available_models:
-            if "1.5-flash" in m:
-                return m
-        # Если нет flash, ищем pro
-        for m in available_models:
-            if "pro" in m:
-                return m
-        # Берем первую попавшуюся рабочую, если ничего не подошло
-        if available_models:
-            return available_models[0]
-            
-        return "gemini-1.5-flash" # Жесткий фоллбэк
-    except Exception:
-        return "models/gemini-1.5-flash"
-
-WORKING_MODEL = get_best_model()
+# --- ИСПОЛЬЗУЕМ АКТУАЛЬНУЮ МОДЕЛЬ, ЗАПРОШЕННУЮ СЕРВЕРОМ ---
+WORKING_MODEL = "gemini-3.1-pro-preview"
 
 # --- ФУНКЦИЯ ГЕНЕРАЦИИ СЕРТИФИКАТА ---
 def create_pdf_certificate(course_name, student_name="Talgat Omirzhanov"):
