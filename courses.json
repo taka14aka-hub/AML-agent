@@ -1,232 +1,54 @@
-import streamlit as st
-import google.generativeai as genai
-import glob
-from fpdf import FPDF
-import json
-import time
-
-# --- НАСТРОЙКА СТРАНИЦЫ И API ---
-st.set_page_config(page_title="AML Агент - РК", page_icon="🛡️", layout="wide")
-
-try:
-    api_key = st.secrets["GEMINI_API_KEY"]
-    genai.configure(api_key=api_key)
-except KeyError:
-    st.error("API ключ не найден в секретах Streamlit! Добавьте его в настройки.")
-    st.stop()
-
-# --- ФУНКЦИЯ ГЕНЕРАЦИИ СЕРТИФИКАТА ---
-def create_pdf_certificate(course_name, student_name="Talgat Omirzhanov"):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("helvetica", "B", 16)
-    pdf.cell(0, 20, "CERTIFICATE OF COMPLETION", align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("helvetica", "", 14)
-    pdf.cell(0, 10, f"Awarded to: {student_name}", align="C", new_x="LMARGIN", new_y="NEXT")
-    
-    safe_course_name = course_name.encode('ascii', 'ignore').decode('ascii')
-    if not safe_course_name.strip():
-        safe_course_name = "AML & Compliance Training"
-        
-    pdf.cell(0, 10, f"Course: {safe_course_name}", align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 10, "Status: Successfully completed all modules and tests.", align="C")
-    return pdf.output(dest="S").encode("latin-1")
-
-# --- ИНИЦИАЛИЗАЦИЯ ПАМЯТИ ---
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "gemini_files" not in st.session_state:
-    st.session_state.gemini_files = []
-if "uploaded_file_names" not in st.session_state:
-    st.session_state.uploaded_file_names = set()
-if "current_module" not in st.session_state:
-    st.session_state.current_module = 1
-if "course_passed" not in st.session_state:
-    st.session_state.course_passed = False
-if "module_content" not in st.session_state:
-    st.session_state.module_content = ""
-
-# --- БОКОВАЯ ПАНЕЛЬ ---
-with st.sidebar:
-    st.header("⚙️ Настройки и Статус")
-    task_mode = st.selectbox(
-        "Выберите режим работы:",
-        ("Аудит ПВК и регламентов", "Ответ на запрос/жалобу АРРФР", "🎓 Обучающий тренажер (Крипто)")
-    )
-    st.success("API ключ подключен автоматически! 🟢")
-    st.divider()
-
-# --- ЛОГИКА 1: АУДИТ И АРРФР (СТАНДАРТНЫЙ ЧАТ) ---
-if task_mode in ["Аудит ПВК и регламентов", "Ответ на запрос/жалобу АРРФР"]:
-    st.title("🛡️ ИИ-Агент по AML Комплаенсу (РК)")
-    
-    st.subheader("📂 База знаний")
-    if not st.session_state.gemini_files:
-        with st.spinner("Синхронизация нормативной базы..."):
-            pdf_files = glob.glob("*.pdf")
-            if pdf_files:
-                for file_path in pdf_files:
-                    if file_path not in st.session_state.uploaded_file_names:
-                        try:
-                            gemini_file = genai.upload_file(path=file_path)
-                            st.session_state.gemini_files.append(gemini_file)
-                            st.session_state.uploaded_file_names.add(file_path)
-                        except Exception as e:
-                            st.error(f"Ошибка загрузки файла {file_path}: {e}")
-                st.success(f"Автоматически загружено документов: {len(st.session_state.gemini_files)}")
-            else:
-                st.info("Пока нет базовых документов. Загрузите PDF-файлы на GitHub.")
-    else:
-        st.success(f"Активных документов в памяти: {len(st.session_state.gemini_files)}")
-
-    try:
-        with open("rules_and_memory.txt", "r", encoding="utf-8") as f:
-            long_term_memory = f.read()
-    except FileNotFoundError:
-        long_term_memory = "Дополнительные инструкции отсутствуют."
-
-    if task_mode == "Аудит ПВК и регламентов":
-        mode_instructions = "Твоя задача — аудит ПВК. Ищи риски, уязвимости и несоответствия законам. Предлагай жесткие формулировки."
-    else:
-        mode_instructions = "Твоя задача — подготовка официального ответа для АРРФР. Защищай интересы МФО, ссылайся на нормы права, пиши в строгом деловом стиле."
-
-    system_instruction = f'''
-    Ты — ведущий ИИ-методолог по комплаенсу.
-    {long_term_memory}
-    
-    ТЕКУЩАЯ ЗАДАЧА: {mode_instructions}
-    '''
-
-    st.divider()
-    st.subheader(f"💬 Диалог ({task_mode})")
-    
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    if prompt := st.chat_input("Введите ваш запрос..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            # Исправлено на 1.5-flash
-            model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=system_instruction)
-            contents = st.session_state.gemini_files + [prompt]
-            with st.spinner("Анализирую данные..."):
-                try:
-                    response = model.generate_content(contents)
-                    st.markdown(response.text)
-                    st.session_state.messages.append({"role": "assistant", "content": response.text})
-                except Exception as e:
-                    st.error(f"Ошибка генерации ответа: {e}")
-
-# --- ЛОГИКА 2: ОБУЧАЮЩИЙ ТРЕНАЖЕР (СТАТИЧНАЯ БАЗА) ---
-else:
-    st.title("🎓 Тренажер по комплаенсу (Offline-база)")
-    st.markdown("Теория загружается моментально из базы. ИИ используется только для проверки ответов!")
-    
-    try:
-        with open("courses.json", "r", encoding="utf-8") as f:
-            courses_db = json.load(f)
-    except FileNotFoundError:
-        st.error("Файл courses.json не найден. Пожалуйста, создайте его в корневом каталоге проекта.")
-        st.stop()
-    except json.JSONDecodeError:
-        st.error("Ошибка в формате файла courses.json. Убедитесь, что там корректный JSON-код.")
-        st.stop()
-        
-    course_list = list(courses_db.keys())
-    
-    if "selected_course" not in st.session_state:
-        st.session_state.selected_course = course_list[0] if course_list else ""
-
-    course_topic = st.selectbox("Выберите курс для изучения:", course_list)
-    
-    if course_topic != st.session_state.selected_course:
-        st.session_state.selected_course = course_topic
-        st.session_state.current_module = 1
-        st.session_state.course_passed = False
-        st.session_state.module_content = ""
-        st.rerun() 
-    
-    if course_topic:
-        total_modules = len(courses_db[course_topic].keys())
-        
-        if not st.session_state.course_passed:
-            st.info(f"📚 Модуль {st.session_state.current_module} из {total_modules}.")
-            
-            current_mod_str = str(st.session_state.current_module)
-            
-            if not st.session_state.module_content:
-                if current_mod_str in courses_db[course_topic]:
-                    module_data = courses_db[course_topic][current_mod_str]
-                    theory_text = module_data.get("Теория", "Теория не найдена.")
-                    
-                    questions = module_data.get("Вопросы", [])
-                    questions_formatted = "\n".join([f"{i+1}. {q}" for i, q in enumerate(questions)])
-                    
-                    st.session_state.module_content = f"{theory_text}\n\n### Проверочные вопросы:\n{questions_formatted}"
-                    st.rerun()
-                else:
-                    st.error(f"Модуль {current_mod_str} не найден в файле JSON.")
-                    st.stop()
-            
-            st.markdown(st.session_state.module_content)
-            
-            user_answer = st.text_area("Введите ваши ответы на вопросы:")
-            
-            if st.button("Отправить на проверку"):
-                if user_answer:
-                    with st.spinner("Агент проверяет ваши ответы..."):
-                        try:
-                            # Исправлено на 1.5-flash
-                            trainer_model = genai.GenerativeModel("gemini-1.5-flash")
-                            prompt_check = f"""
-                            Студент отвечает на вопросы Модуля {st.session_state.current_module} по теме "{course_topic}".
-                            Материал модуля: {st.session_state.module_content}
-                            Ответы студента: {user_answer}
-                            
-                            Твоя задача — проверить правильность. Если ВСЕ ответы верны по смыслу, начни свой ответ со слова ПРИНЯТО.
-                            Если есть ошибки, укажи на них. Слово ПРИНЯТО не пиши!
-                            """
-                            eval_response = trainer_model.generate_content(prompt_check)
-                            
-                            st.markdown("### 📝 Комментарий преподавателя:")
-                            st.info(eval_response.text)
-                            
-                            if "ПРИНЯТО" in eval_response.text.upper():
-                                st.success("Отлично! Модуль пройден. Загружаем следующий этап...")
-                                st.session_state.module_content = "" 
-                                
-                                if st.session_state.current_module >= total_modules:
-                                    st.session_state.course_passed = True
-                                else:
-                                    st.session_state.current_module += 1
-                                
-                                time.sleep(3)
-                                st.rerun()
-                            else:
-                                st.error("Есть ошибки. Изучите комментарии и отправьте заново.")
-                                
-                        except Exception as e:
-                            st.error(f"Сервер Google временно недоступен. Подождите 15-30 секунд. (Ошибка: {e})")
-                else:
-                    st.warning("Напишите ответы перед отправкой.")
-        
-        else:
-            st.success("🎉 Поздравляем! Вы успешно завершили все модули.")
-            
-            pdf_bytes = create_pdf_certificate(course_topic)
-            st.download_button(
-                label="📥 Скачать сертификат (PDF)",
-                data=pdf_bytes,
-                file_name="Compliance_Certificate.pdf",
-                mime="application/pdf"
-            )
-            
-            if st.button("Начать новый курс"):
-                st.session_state.current_module = 1
-                st.session_state.course_passed = False
-                st.session_state.module_content = ""
-                st.rerun()
+{
+  "Know Your Transaction (KYT) и блокчейн-аналитика": {
+    "1": {
+      "Теория": "Традиционный комплаенс строится на процедуре KYC (Знай своего клиента), где упор делается на личность. В криптовалюте фокус смещается на KYT (Знай свою транзакцию). Блокчейн (например, Bitcoin или Ethereum) публичен, но псевдоанонимен: мы видим балансы и переводы, но не видим имен. Главная задача KYT — анализ истории движения средств по адресам для выявления связи с незаконной деятельностью. В отличие от фиатных систем, где деньги смешиваются на корсчетах банков, блокчейн позволяет технически отследить путь каждой монеты от момента ее создания.",
+      "Вопросы": [
+        "В чем фундаментальное отличие KYT от KYC?",
+        "Почему публичный блокчейн называют псевдоанонимным?",
+        "Какова главная задача процедуры KYT?"
+      ]
+    },
+    "2": {
+      "Теория": "Основа KYT — риск-скоринг криптовалютных кошельков. Специальные аналитические платформы (Chainalysis, Crystal, Elliptic) размечают адреса и присваивают им уровень риска от 0 до 100%. Адреса делятся на сущности (Entities): биржи, майнинговые пулы, даркнет-маркетплейсы, миксеры и санкционные списки (OFAC). Если алгоритм видит, что на кошелек клиента поступили средства напрямую из миксера (сервиса для запутывания следов) или подсанкционного обменника (например, Garantex), кошелек получает статус High Risk. Также аналитика использует кластеризацию — объединение сотен адресов в одну группу, если они управляются одним владельцем.",
+      "Вопросы": [
+        "Что такое риск-скоринг кошелька?",
+        "Для чего применяется кластеризация адресов?",
+        "Приведите пример высокорисковой сущности (Entity) в блокчейне."
+      ]
+    },
+    "3": {
+      "Теория": "При расследовании цепочек транзакций отмыватели часто используют технику 'Peel Chain' (цепочка отслаивания). Крупная сумма переводится через десятки адресов, при этом на каждом шаге от нее 'отслаивается' небольшая часть и уходит на биржу для обналичивания. Комплаенс-офицер должен различать Direct Exposure (прямое взаимодействие) — когда клиент получил деньги напрямую от даркнет-площадки, и Indirect Exposure (косвенное взаимодействие) — когда грязные деньги прошли через 5-6 транзитных кошельков, прежде чем попасть к клиенту. Чем длиннее цепочка, тем ниже остаточный риск.",
+      "Вопросы": [
+        "Что такое техника 'Peel Chain'?",
+        "В чем разница между прямым (Direct) и косвенным (Indirect) взаимодействием?",
+        "Влияет ли длина цепочки транзакций на уровень риска?"
+      ]
+    }
+  },
+  "Анализ P2P-торговли и теневых обменников": {
+    "1": {
+      "Теория": "P2P-торговля (Peer-to-Peer) — это обмен фиата на криптовалюту напрямую между пользователями, где биржа выступает лишь гарантом перевода крипты (Escrow). Для AML это серая зона: движение криптовалюты происходит внутри биржи, а движение фиатных денег (тенге) — переводами с карты на карту в обычных банках. Злоумышленники используют P2P для разрыва аудиторского следа, покупая крипту за похищенные средства или деньги от наркоторговли. Для массовых операций нелегальные обменники массово скупают банковские карты подставных лиц — 'дропов'.",
+      "Вопросы": [
+        "Какую роль выполняет биржа в P2P-сделках?",
+        "Почему P2P-переводы разрывают аудиторский след?",
+        "Кто такие 'дропы' в схемах незаконного обналичивания?"
+      ]
+    },
+    "2": {
+      "Теория": "Финансовый мониторинг выявляет теневой P2P-арбитраж по банковским выпискам (Red Flags). Типичные признаки: 1) Аномально большое количество входящих/исходящих переводов от десятков не связанных между собой физлиц. 2) Транзитный характер — деньги поступают на карту и в течение нескольких минут переводятся дальше или снимаются. 3) Отсутствие обычных бытовых трат (продукты, ЖКХ). 4) Круглые суммы или совпадение сумм с котировками на криптобиржах в реальном времени. В РК такие операции подпадают под критерии подозрительных транзакций, утвержденных АФМ.",
+      "Вопросы": [
+        "Назовите два главных признака транзитных операций по выписке.",
+        "Как отсутствие бытовых трат помогает выявить карту дропа?",
+        "С какими списками критериев АФМ пересекается нелегальный P2P-арбитраж?"
+      ]
+    },
+    "3": {
+      "Теория": "При выявлении признаков P2P-арбитража комплаенс обязан запросить у клиента подтверждающие документы (EDD). Клиент должен предоставить: 1) Пояснение об экономическом смысле операций; 2) Подтверждение источника происхождения средств (Source of Funds); 3) Выгрузку истории ордеров (Trade History) с P2P-платформы; 4) Скриншот профиля биржи, подтверждающий, что никнейм и KYC-статус на бирже совпадают с его личностью. Если клиент уклоняется или присылает поддельные скрины, MLRO обязан заблокировать операции и направить сообщение о подозрительной операции (СПО) в АФМ.",
+      "Вопросы": [
+        "Какие документы требуются от клиента для подтверждения легальности P2P?",
+        "Зачем комплаенсу запрашивать скриншот профиля с криптобиржи?",
+        "Каковы действия MLRO, если клиент отказывается предоставить пояснения?"
+      ]
+    }
+  }
+}
