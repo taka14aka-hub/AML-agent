@@ -17,7 +17,6 @@ except KeyError:
 
 # --- ФУНКЦИЯ ГЕНЕРАЦИИ СЕРТИФИКАТА ---
 def create_pdf_certificate(course_name, student_name="Talgat Omirzhanov"):
-    # Используем латиницу, так как стандартные шрифты FPDF не поддерживают кириллицу
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("helvetica", "B", 16)
@@ -25,7 +24,6 @@ def create_pdf_certificate(course_name, student_name="Talgat Omirzhanov"):
     pdf.set_font("helvetica", "", 14)
     pdf.cell(0, 10, f"Awarded to: {student_name}", align="C", new_x="LMARGIN", new_y="NEXT")
     
-    # Конвертируем название курса в ascii, игнорируя нечитаемые символы, чтобы избежать краша
     safe_course_name = course_name.encode('ascii', 'ignore').decode('ascii')
     if not safe_course_name.strip():
         safe_course_name = "AML & Compliance Training"
@@ -34,7 +32,7 @@ def create_pdf_certificate(course_name, student_name="Talgat Omirzhanov"):
     pdf.cell(0, 10, "Status: Successfully completed all modules and tests.", align="C")
     return pdf.output(dest="S").encode("latin-1")
 
-# --- ИНИЦИАЛИЗАЦИЯ ПАМЯТИ (ДЛЯ ВСЕХ РЕЖИМОВ) ---
+# --- ИНИЦИАЛИЗАЦИЯ ПАМЯТИ ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "gemini_files" not in st.session_state:
@@ -62,7 +60,6 @@ with st.sidebar:
 if task_mode in ["Аудит ПВК и регламентов", "Ответ на запрос/жалобу АРРФР"]:
     st.title("🛡️ ИИ-Агент по AML Комплаенсу (РК)")
     
-    # 1. Загрузка базы знаний (PDF)
     st.subheader("📂 База знаний")
     if not st.session_state.gemini_files:
         with st.spinner("Синхронизация нормативной базы..."):
@@ -82,14 +79,12 @@ if task_mode in ["Аудит ПВК и регламентов", "Ответ на
     else:
         st.success(f"Активных документов в памяти: {len(st.session_state.gemini_files)}")
 
-    # 2. Загрузка установок из файла
     try:
         with open("rules_and_memory.txt", "r", encoding="utf-8") as f:
             long_term_memory = f.read()
     except FileNotFoundError:
         long_term_memory = "Дополнительные инструкции отсутствуют."
 
-    # 3. Настройка логики агента в зависимости от выбранного режима
     if task_mode == "Аудит ПВК и регламентов":
         mode_instructions = "Твоя задача — аудит ПВК. Ищи риски, уязвимости и несоответствия законам. Предлагай жесткие формулировки."
     else:
@@ -105,20 +100,18 @@ if task_mode in ["Аудит ПВК и регламентов", "Ответ на
     st.divider()
     st.subheader(f"💬 Диалог ({task_mode})")
     
-    # 4. Отрисовка чата
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # 5. Ввод пользователя и ответ ИИ
     if prompt := st.chat_input("Введите ваш запрос..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            # ИСПОЛЬЗУЕМ СТАБИЛЬНУЮ МОДЕЛЬ 1.5-PRO
-            model = genai.GenerativeModel(model_name="gemini-1.5-pro", system_instruction=system_instruction)
+            # Исправлено на 1.5-flash
+            model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=system_instruction)
             contents = st.session_state.gemini_files + [prompt]
             with st.spinner("Анализирую данные..."):
                 try:
@@ -133,7 +126,6 @@ else:
     st.title("🎓 Тренажер по комплаенсу (Offline-база)")
     st.markdown("Теория загружается моментально из базы. ИИ используется только для проверки ответов!")
     
-    # 1. Загрузка базы курсов из файла
     try:
         with open("courses.json", "r", encoding="utf-8") as f:
             courses_db = json.load(f)
@@ -144,16 +136,13 @@ else:
         st.error("Ошибка в формате файла courses.json. Убедитесь, что там корректный JSON-код.")
         st.stop()
         
-    # Динамический список курсов из базы
     course_list = list(courses_db.keys())
     
-    # Отслеживание смены курса
     if "selected_course" not in st.session_state:
         st.session_state.selected_course = course_list[0] if course_list else ""
 
     course_topic = st.selectbox("Выберите курс для изучения:", course_list)
     
-    # Если пользователь выбрал другую тему — сбрасываем прогресс
     if course_topic != st.session_state.selected_course:
         st.session_state.selected_course = course_topic
         st.session_state.current_module = 1
@@ -162,17 +151,14 @@ else:
         st.rerun() 
     
     if course_topic:
-        # Динамический подсчет модулей в выбранном курсе
         total_modules = len(courses_db[course_topic].keys())
         
         if not st.session_state.course_passed:
             st.info(f"📚 Модуль {st.session_state.current_module} из {total_modules}.")
             
-            # 2. МГНОВЕННАЯ ЗАГРУЗКА ТЕОРИИ
             current_mod_str = str(st.session_state.current_module)
             
             if not st.session_state.module_content:
-                # Защита от ошибки, если модуля нет в базе
                 if current_mod_str in courses_db[course_topic]:
                     module_data = courses_db[course_topic][current_mod_str]
                     theory_text = module_data.get("Теория", "Теория не найдена.")
@@ -188,15 +174,14 @@ else:
             
             st.markdown(st.session_state.module_content)
             
-            # 3. ПРОВЕРКА ОТВЕТОВ (ИИ)
             user_answer = st.text_area("Введите ваши ответы на вопросы:")
             
             if st.button("Отправить на проверку"):
                 if user_answer:
                     with st.spinner("Агент проверяет ваши ответы..."):
                         try:
-                            # ИСПОЛЬЗУЕМ СТАБИЛЬНУЮ МОДЕЛЬ 1.5-PRO
-                            trainer_model = genai.GenerativeModel("gemini-1.5-pro")
+                            # Исправлено на 1.5-flash
+                            trainer_model = genai.GenerativeModel("gemini-1.5-flash")
                             prompt_check = f"""
                             Студент отвечает на вопросы Модуля {st.session_state.current_module} по теме "{course_topic}".
                             Материал модуля: {st.session_state.module_content}
@@ -214,13 +199,12 @@ else:
                                 st.success("Отлично! Модуль пройден. Загружаем следующий этап...")
                                 st.session_state.module_content = "" 
                                 
-                                # Динамическая проверка финала курса
                                 if st.session_state.current_module >= total_modules:
                                     st.session_state.course_passed = True
                                 else:
                                     st.session_state.current_module += 1
                                 
-                                time.sleep(3) # Короткая пауза для безопасности API
+                                time.sleep(3)
                                 st.rerun()
                             else:
                                 st.error("Есть ошибки. Изучите комментарии и отправьте заново.")
@@ -231,7 +215,6 @@ else:
                     st.warning("Напишите ответы перед отправкой.")
         
         else:
-            # 4. ФИНАЛ И СЕРТИФИКАТ
             st.success("🎉 Поздравляем! Вы успешно завершили все модули.")
             
             pdf_bytes = create_pdf_certificate(course_topic)
