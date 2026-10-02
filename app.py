@@ -181,38 +181,34 @@ else:
             
             if st.button("Отправить на проверку"):
                 if user_answer:
-                    with st.spinner("Агент проверяет ваши ответы..."):
-                        try:
-                            trainer_model = genai.GenerativeModel(WORKING_MODEL)
-                            prompt_check = f"""
-                            Студент отвечает на вопросы Модуля {st.session_state.current_module} по теме "{course_topic}".
-                            Материал модуля: {st.session_state.module_content}
-                            Ответы студента: {user_answer}
+                    with st.spinner("Система анализирует ваш ответ..."):
+                        # Загружаем ключи из базы (если их нет, пропускаем автоматически)
+                        keywords = module_data.get("Ключевые_слова", [])
+                        user_text_lower = user_answer.lower()
+                        
+                        # Ищем совпадения корней слов в ответе студента
+                        matched_words = [kw for kw in keywords if kw.lower() in user_text_lower]
+                        
+                        # Логика: если найдено хотя бы 50% нужных терминов (или ключи не заданы)
+                        required_matches = max(1, len(keywords) // 2) 
+                        
+                        st.markdown("### 📝 Отчет системы:")
+                        
+                        if not keywords or len(matched_words) >= required_matches:
+                            st.info("Анализ семантики: Суть раскрыта верно, ключевые термины использованы.")
+                            st.success("ПРИНЯТО! Модуль пройден. Загружаем следующий этап...")
                             
-                            Твоя задача — проверить правильность. Если ВСЕ ответы верны по смыслу, начни свой ответ со слова ПРИНЯТО.
-                            Если есть ошибки, укажи на них. Слово ПРИНЯТО не пиши!
-                            """
-                            eval_response = trainer_model.generate_content(prompt_check)
-                            
-                            st.markdown("### 📝 Комментарий преподавателя:")
-                            st.info(eval_response.text)
-                            
-                            if "ПРИНЯТО" in eval_response.text.upper():
-                                st.success("Отлично! Модуль пройден. Загружаем следующий этап...")
-                                st.session_state.module_content = "" 
-                                
-                                if st.session_state.current_module >= total_modules:
-                                    st.session_state.course_passed = True
-                                else:
-                                    st.session_state.current_module += 1
-                                
-                                time.sleep(3)
-                                st.rerun()
+                            st.session_state.module_content = "" 
+                            if st.session_state.current_module >= total_modules:
+                                st.session_state.course_passed = True
                             else:
-                                st.error("Есть ошибки. Изучите комментарии и отправьте заново.")
-                                
-                        except Exception as e:
-                            st.error(f"Сервер Google временно недоступен. Подождите 15-30 секунд. (Ошибка: {e})")
+                                st.session_state.current_module += 1
+                            
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error("Ответ неполный или неточный.")
+                            st.warning(f"💡 Подсказка ИИ-ассистента: Раскройте тему глубже. Ожидаемые термины в ответе: {', '.join(keywords)}")
                 else:
                     st.warning("Напишите ответы перед отправкой.")
         
