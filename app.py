@@ -2,6 +2,9 @@ import streamlit as st
 import json
 import time
 import glob
+import os
+import urllib.request
+from datetime import datetime
 from fpdf import FPDF
 import google.generativeai as genai
 
@@ -20,23 +23,47 @@ def load_courses_db():
     except json.JSONDecodeError:
         return "error"
 
-# --- ФУНКЦИЯ ГЕНЕРАЦИИ СЕРТИФИКАТА ---
-def create_pdf_certificate(course_name, student_name="Talgat Omirzhanov"):
+# --- ФУНКЦИЯ ГЕНЕРАЦИИ СЕРТИФИКАТА (KZ/RU + ДАТА + ШРИФТЫ) ---
+def create_pdf_certificate(course_name, student_name):
+    # Скачиваем шрифт Roboto (поддерживает кириллицу и казахский язык), если его нет
+    font_path = "Roboto-Regular.ttf"
+    if not os.path.exists(font_path):
+        url = "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf"
+        try:
+            urllib.request.urlretrieve(url, font_path)
+        except Exception as e:
+            st.error(f"Не удалось загрузить шрифт для PDF: {e}")
+            
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("helvetica", "B", 16)
-    pdf.cell(0, 20, "CERTIFICATE OF COMPLETION", align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("helvetica", "", 14)
-    pdf.cell(0, 10, f"Awarded to: {student_name}", align="C", new_x="LMARGIN", new_y="NEXT")
     
-    safe_course_name = course_name.encode('ascii', 'ignore').decode('ascii')
-    if not safe_course_name.strip():
-        safe_course_name = "AML & Compliance Training"
-        
-    pdf.cell(0, 10, f"Course: {safe_course_name}", align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 10, "Status: Successfully completed all modules and tests.", align="C")
+    # Подключаем скачанный шрифт
+    pdf.add_font("Roboto", "", font_path)
     
-    # ИСПРАВЛЕНИЕ: Вызываем output() без устаревшего dest="S" и конвертируем напрямую в bytes
+    # Заголовок (RU / KZ)
+    pdf.set_font("Roboto", "", 18)
+    pdf.cell(0, 15, "СЕРТИФИКАТ О ПРОХОЖДЕНИИ", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 15, "ОҚУДЫ АЯҚТАҒАНЫ ТУРАЛЫ СЕРТИФИКАТ", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(10)
+    
+    # Основные данные
+    pdf.set_font("Roboto", "", 14)
+    pdf.cell(0, 10, f"Выдан / Берілді: {student_name}", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, f"Курс: {course_name}", align="C", new_x="LMARGIN", new_y="NEXT")
+    
+    # Текущая дата
+    current_date = datetime.now().strftime("%d.%m.%Y")
+    pdf.cell(0, 10, f"Дата / Күні: {current_date}", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(10)
+    
+    # Статус
+    pdf.set_font("Roboto", "", 12)
+    status_text = (
+        "Статус: Успешно завершил(а) все модули и тесты.\n"
+        "Мәртебесі: Барлық модульдер мен тесттерді сәтті аяқтады."
+    )
+    pdf.multi_cell(0, 8, status_text, align="C")
+    
     return bytes(pdf.output())
 
 # --- ИНИЦИАЛИЗАЦИЯ ПАМЯТИ ---
@@ -151,13 +178,22 @@ if task_mode == "🎓 Обучающий тренажер (Офлайн)":
         
         else:
             st.success("🎉 Поздравляем! Вы успешно завершили все модули курса.")
-            pdf_bytes = create_pdf_certificate(course_topic)
-            st.download_button(
-                label="📥 Скачать сертификат (PDF)",
-                data=pdf_bytes,
-                file_name="Compliance_Certificate.pdf",
-                mime="application/pdf"
-            )
+            
+            # Поле для ввода имени студента
+            student_name = st.text_input("Введите ваши имя и фамилию для получения сертификата:", placeholder="Например: Азамат Сериков")
+            
+            if student_name.strip():
+                pdf_bytes = create_pdf_certificate(course_topic, student_name.strip())
+                st.download_button(
+                    label="📥 Скачать сертификат (PDF)",
+                    data=pdf_bytes,
+                    file_name=f"Certificate_{student_name.replace(' ', '_')}.pdf",
+                    mime="application/pdf"
+                )
+            else:
+                st.info("👆 Пожалуйста, введите свое имя в поле выше, чтобы появилась кнопка скачивания.")
+            
+            st.divider()
             if st.button("Начать новый курс"):
                 st.session_state.current_module = 1
                 st.session_state.course_passed = False
