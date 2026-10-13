@@ -179,9 +179,13 @@ else:
             
             user_answer = st.text_area("Введите ваши ответы на вопросы:")
             
-            if st.button("Отправить на проверку"):
+           if st.button("Отправить на проверку"):
                 if user_answer:
                     with st.spinner("Система анализирует ваш ответ..."):
+                        # Заново извлекаем данные модуля из базы перед проверкой
+                        current_mod_str = str(st.session_state.current_module)
+                        module_data = courses_db[course_topic][current_mod_str]
+                        
                         # Загружаем ключи из базы (если их нет, пропускаем автоматически)
                         keywords = module_data.get("Ключевые_слова", [])
                         user_text_lower = user_answer.lower()
