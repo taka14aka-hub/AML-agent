@@ -1,22 +1,24 @@
 import streamlit as st
-import google.generativeai as genai
-import glob
-from fpdf import FPDF
 import json
 import time
+import glob
+from fpdf import FPDF
+import google.generativeai as genai
 
-# --- НАСТРОЙКА СТРАНИЦЫ И API ---
+# --- НАСТРОЙКА СТРАНИЦЫ ---
 st.set_page_config(page_title="AML Агент - РК", page_icon="🛡️", layout="wide")
 
-try:
-    api_key = st.secrets["GEMINI_API_KEY"]
-    genai.configure(api_key=api_key)
-except KeyError:
-    st.error("API ключ не найден в секретах Streamlit! Добавьте его в настройки.")
-    st.stop()
-
-# --- ИСПОЛЬЗУЕМ АКТУАЛЬНУЮ МОДЕЛЬ, ЗАПРОШЕННУЮ СЕРВЕРОМ ---
-WORKING_MODEL = "gemini-3.1-pro-preview"
+# --- КЭШИРОВАНИЕ БАЗЫ ДАННЫХ (УСКОРЕНИЕ РАБОТЫ) ---
+@st.cache_data(show_spinner=False)
+def load_courses_db():
+    """Загружает JSON один раз и держит в памяти, чтобы не тормозить приложение."""
+    try:
+        with open("courses.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError:
+        return "error"
 
 # --- ФУНКЦИЯ ГЕНЕРАЦИИ СЕРТИФИКАТА ---
 def create_pdf_certificate(course_name, student_name="Talgat Omirzhanov"):
@@ -49,94 +51,29 @@ if "course_passed" not in st.session_state:
 if "module_content" not in st.session_state:
     st.session_state.module_content = ""
 
-# --- БОКОВАЯ ПАНЕЛЬ ---
+# --- БОКОВАЯ ПАНЕЛЬ И ВЫБОР РЕЖИМА ---
 with st.sidebar:
     st.header("⚙️ Настройки и Статус")
     task_mode = st.selectbox(
         "Выберите режим работы:",
-        ("Аудит ПВК и регламентов", "Ответ на запрос/жалобу АРРФР", "🎓 Обучающий тренажер (Крипто)")
+        ("🎓 Обучающий тренажер (Офлайн)", "Аудит ПВК и регламентов", "Ответ на запрос/жалобу АРРФР")
     )
-    st.success("API ключ подключен! 🟢")
-    st.info(f"Активная модель ИИ:\n**{WORKING_MODEL}**") # Показываем, какую модель нашел код
     st.divider()
 
-# --- ЛОГИКА 1: АУДИТ И АРРФР (СТАНДАРТНЫЙ ЧАТ) ---
-if task_mode in ["Аудит ПВК и регламентов", "Ответ на запрос/жалобу АРРФР"]:
-    st.title("🛡️ ИИ-Агент по AML Комплаенсу (РК)")
+# =====================================================================
+# ЛОГИКА 1: ОБУЧАЮЩИЙ ТРЕНАЖЕР (СТРОГО ОФЛАЙН, 0 ТОКЕНОВ)
+# =====================================================================
+if task_mode == "🎓 Обучающий тренажер (Офлайн)":
+    st.title("🎓 Тренажер по комплаенсу")
+    st.markdown("⚡ *Работает автономно. Не расходует лимиты API.*")
     
-    st.subheader("📂 База знаний")
-    if not st.session_state.gemini_files:
-        with st.spinner("Синхронизация нормативной базы..."):
-            pdf_files = glob.glob("*.pdf")
-            if pdf_files:
-                for file_path in pdf_files:
-                    if file_path not in st.session_state.uploaded_file_names:
-                        try:
-                            gemini_file = genai.upload_file(path=file_path)
-                            st.session_state.gemini_files.append(gemini_file)
-                            st.session_state.uploaded_file_names.add(file_path)
-                        except Exception as e:
-                            st.error(f"Ошибка загрузки файла {file_path}: {e}")
-                st.success(f"Автоматически загружено документов: {len(st.session_state.gemini_files)}")
-            else:
-                st.info("Пока нет базовых документов. Загрузите PDF-файлы на GitHub.")
-    else:
-        st.success(f"Активных документов в памяти: {len(st.session_state.gemini_files)}")
-
-    try:
-        with open("rules_and_memory.txt", "r", encoding="utf-8") as f:
-            long_term_memory = f.read()
-    except FileNotFoundError:
-        long_term_memory = "Дополнительные инструкции отсутствуют."
-
-    if task_mode == "Аудит ПВК и регламентов":
-        mode_instructions = "Твоя задача — аудит ПВК. Ищи риски, уязвимости и несоответствия законам. Предлагай жесткие формулировки."
-    else:
-        mode_instructions = "Твоя задача — подготовка официального ответа для АРРФР. Защищай интересы МФО, ссылайся на нормы права, пиши в строгом деловом стиле."
-
-    system_instruction = f'''
-    Ты — ведущий ИИ-методолог по комплаенсу.
-    {long_term_memory}
+    courses_db = load_courses_db()
     
-    ТЕКУЩАЯ ЗАДАЧА: {mode_instructions}
-    '''
-
-    st.divider()
-    st.subheader(f"💬 Диалог ({task_mode})")
-    
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    if prompt := st.chat_input("Введите ваш запрос..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            model = genai.GenerativeModel(model_name=WORKING_MODEL, system_instruction=system_instruction)
-            contents = st.session_state.gemini_files + [prompt]
-            with st.spinner("Анализирую данные..."):
-                try:
-                    response = model.generate_content(contents)
-                    st.markdown(response.text)
-                    st.session_state.messages.append({"role": "assistant", "content": response.text})
-                except Exception as e:
-                    st.error(f"Ошибка генерации ответа: {e}")
-
-# --- ЛОГИКА 2: ОБУЧАЮЩИЙ ТРЕНАЖЕР (СТАТИЧНАЯ БАЗА) ---
-else:
-    st.title("🎓 Тренажер по комплаенсу (Offline-база)")
-    st.markdown("Теория загружается моментально из базы. ИИ используется только для проверки ответов!")
-    
-    try:
-        with open("courses.json", "r", encoding="utf-8") as f:
-            courses_db = json.load(f)
-    except FileNotFoundError:
-        st.error("Файл courses.json не найден. Пожалуйста, создайте его в корневом каталоге проекта.")
+    if courses_db is None:
+        st.error("Файл `courses.json` не найден. Создайте его в корне проекта.")
         st.stop()
-    except json.JSONDecodeError:
-        st.error("Ошибка в формате файла courses.json. Убедитесь, что там корректный JSON-код.")
+    elif courses_db == "error":
+        st.error("Синтаксическая ошибка в `courses.json`. Проверьте файл через любой JSON Validator.")
         st.stop()
         
     course_list = list(courses_db.keys())
@@ -146,6 +83,7 @@ else:
 
     course_topic = st.selectbox("Выберите курс для изучения:", course_list)
     
+    # Сброс прогресса при смене курса
     if course_topic != st.session_state.selected_course:
         st.session_state.selected_course = course_topic
         st.session_state.current_module = 1
@@ -154,71 +92,63 @@ else:
         st.rerun() 
     
     if course_topic:
-        total_modules = len(courses_db[course_topic].keys())
+        course_data = courses_db.get(course_topic, {})
+        total_modules = len(course_data.keys())
         
         if not st.session_state.course_passed:
             st.info(f"📚 Модуль {st.session_state.current_module} из {total_modules}.")
-            
             current_mod_str = str(st.session_state.current_module)
             
+            # Безопасное извлечение данных модуля
+            module_data = course_data.get(current_mod_str, {})
+            
             if not st.session_state.module_content:
-                if current_mod_str in courses_db[course_topic]:
-                    module_data = courses_db[course_topic][current_mod_str]
-                    theory_text = module_data.get("Теория", "Теория не найдена.")
-                    
+                if module_data:
+                    theory_text = module_data.get("Теория", "Теория в разработке.")
                     questions = module_data.get("Вопросы", [])
                     questions_formatted = "\n".join([f"{i+1}. {q}" for i, q in enumerate(questions)])
-                    
                     st.session_state.module_content = f"{theory_text}\n\n### Проверочные вопросы:\n{questions_formatted}"
                     st.rerun()
                 else:
-                    st.error(f"Модуль {current_mod_str} не найден в файле JSON.")
+                    st.error(f"Модуль {current_mod_str} пуст или не найден в JSON.")
                     st.stop()
             
+            # Отрисовка теории
             st.markdown(st.session_state.module_content)
             
+            # Локальная проверка ответов
             user_answer = st.text_area("Введите ваши ответы на вопросы:")
             
-           if st.button("Отправить на проверку"):
-                if user_answer:
-                    with st.spinner("Система анализирует ваш ответ..."):
-                        # Заново извлекаем данные модуля из базы перед проверкой
-                        current_mod_str = str(st.session_state.current_module)
-                        module_data = courses_db[course_topic][current_mod_str]
-                        
-                        # Загружаем ключи из базы (если их нет, пропускаем автоматически)
+            if st.button("Отправить на проверку"):
+                if user_answer.strip():
+                    with st.spinner("Локальный анализ семантики..."):
                         keywords = module_data.get("Ключевые_слова", [])
                         user_text_lower = user_answer.lower()
                         
-                        # Ищем совпадения корней слов в ответе студента
                         matched_words = [kw for kw in keywords if kw.lower() in user_text_lower]
-                        
-                        # Логика: если найдено хотя бы 50% нужных терминов (или ключи не заданы)
                         required_matches = max(1, len(keywords) // 2) 
                         
                         st.markdown("### 📝 Отчет системы:")
                         
                         if not keywords or len(matched_words) >= required_matches:
-                            st.info("Анализ семантики: Суть раскрыта верно, ключевые термины использованы.")
-                            st.success("ПРИНЯТО! Модуль пройден. Загружаем следующий этап...")
-                            
+                            st.success("✅ **ПРИНЯТО!** Суть раскрыта верно. Загружаем следующий этап...")
                             st.session_state.module_content = "" 
+                            
                             if st.session_state.current_module >= total_modules:
                                 st.session_state.course_passed = True
                             else:
                                 st.session_state.current_module += 1
                             
-                            time.sleep(2)
+                            time.sleep(1.5)
                             st.rerun()
                         else:
-                            st.error("Ответ неполный или неточный.")
-                            st.warning(f"💡 Подсказка ИИ-ассистента: Раскройте тему глубже. Ожидаемые термины в ответе: {', '.join(keywords)}")
+                            st.error("❌ Ответ неполный или неточный.")
+                            st.warning(f"💡 **Подсказка:** Раскройте тему глубже. Ожидаемые термины: {', '.join(keywords)}")
                 else:
                     st.warning("Напишите ответы перед отправкой.")
         
         else:
-            st.success("🎉 Поздравляем! Вы успешно завершили все модули.")
-            
+            st.success("🎉 Поздравляем! Вы успешно завершили все модули курса.")
             pdf_bytes = create_pdf_certificate(course_topic)
             st.download_button(
                 label="📥 Скачать сертификат (PDF)",
@@ -226,9 +156,82 @@ else:
                 file_name="Compliance_Certificate.pdf",
                 mime="application/pdf"
             )
-            
             if st.button("Начать новый курс"):
                 st.session_state.current_module = 1
                 st.session_state.course_passed = False
                 st.session_state.module_content = ""
                 st.rerun()
+
+# =====================================================================
+# ЛОГИКА 2: АУДИТ И АРРФР (ОНЛАЙН С ИСПОЛЬЗОВАНИЕМ GEMINI API)
+# =====================================================================
+else:
+    st.title("🛡️ ИИ-Агент по AML Комплаенсу (РК)")
+    
+    # Подключение API только если выбран онлайн-режим
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+        genai.configure(api_key=api_key)
+        st.sidebar.success("API ключ Google подключен 🟢")
+        WORKING_MODEL = "gemini-3.1-pro-preview"
+        st.sidebar.caption(f"Модель: {WORKING_MODEL}")
+    except KeyError:
+        st.error("API ключ не найден в настройках. Этот режим требует подключения к Google Gemini.")
+        st.stop()
+
+    st.subheader("📂 Нормативная база")
+    if not st.session_state.gemini_files:
+        with st.spinner("Синхронизация документов..."):
+            pdf_files = glob.glob("*.pdf")
+            if pdf_files:
+                for file_path in pdf_files:
+                    if file_path not in st.session_state.uploaded_file_names:
+                        try:
+                            gemini_file = genai.upload_file(path=file_path)
+                            st.session_state.gemini_files.append(gemini_file)
+                            st.session_state.uploaded_file_names.add(file_path)
+                        except Exception as e:
+                            st.error(f"Ошибка загрузки {file_path}: {e}")
+                st.success(f"Документов в памяти ИИ: {len(st.session_state.gemini_files)}")
+            else:
+                st.info("Нет PDF-файлов. Загрузите их в репозиторий для анализа.")
+    else:
+        st.success(f"Документов в памяти ИИ: {len(st.session_state.gemini_files)}")
+
+    # Загрузка инструкций
+    try:
+        with open("rules_and_memory.txt", "r", encoding="utf-8") as f:
+            long_term_memory = f.read()
+    except FileNotFoundError:
+        long_term_memory = ""
+
+    mode_instructions = (
+        "Твоя задача — аудит ПВК. Ищи риски, уязвимости и несоответствия законам РК. Предлагай жесткие формулировки."
+        if task_mode == "Аудит ПВК и регламентов"
+        else "Твоя задача — подготовка ответа для АРРФР. Защищай интересы МФО, ссылайся на нормы права, пиши в строгом деловом стиле."
+    )
+
+    system_instruction = f"Ты — ведущий ИИ-методолог по AML в Казахстане.\n{long_term_memory}\nТЕКУЩАЯ ЗАДАЧА: {mode_instructions}"
+
+    st.divider()
+    st.subheader(f"💬 Рабочий чат ({task_mode})")
+    
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if prompt := st.chat_input("Опишите задачу или загрузите выдержку из документа..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            model = genai.GenerativeModel(model_name=WORKING_MODEL, system_instruction=system_instruction)
+            contents = st.session_state.gemini_files + [prompt]
+            with st.spinner("Анализирую..."):
+                try:
+                    response = model.generate_content(contents)
+                    st.markdown(response.text)
+                    st.session_state.messages.append({"role": "assistant", "content": response.text})
+                except Exception as e:
+                    st.error(f"Ошибка API (возможно исчерпан лимит): {e}")
