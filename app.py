@@ -16,7 +16,7 @@ st.set_page_config(page_title="AML Агент - РК", page_icon="🛡️", layo
 # ---------------------------------------------------------------------
 # КОНСТАНТЫ
 # ---------------------------------------------------------------------
-FONT_PATH = "Roboto-Regular.ttf"  # положите шрифт в репозиторий
+FONT_PATH = "Roboto_Condensed-Regular.ttf"  # положите шрифт в репозиторий
 COURSES_PATH = "courses.json"
 MEMORY_PATH = "rules_and_memory.txt"
 MIN_ANSWER_WORDS = 8          # защита от ответа в одно слово
