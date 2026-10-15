@@ -16,7 +16,7 @@ st.set_page_config(page_title="AML Агент - РК", page_icon="🛡️", layo
 # ---------------------------------------------------------------------
 # КОНСТАНТЫ
 # ---------------------------------------------------------------------
-FONT_CANDIDATES = ["fonts/Roboto-Regular.ttf", "Roboto-Regular.ttf"]
+FONT_CANDIDATES = ["Roboto_Condensed-Regular.ttf"]
 FONT_PATH = next((p for p in FONT_CANDIDATES if os.path.exists(p)), FONT_CANDIDATES[0])
 COURSES_PATH = "courses.json"
 MEMORY_PATH = "rules_and_memory.txt"
