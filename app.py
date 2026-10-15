@@ -346,4 +346,3 @@ if task_mode.startswith("🎓"):
     render_trainer()
 else:
     render_online(task_mode)
-    
