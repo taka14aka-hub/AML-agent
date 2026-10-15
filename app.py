@@ -168,7 +168,6 @@ def reset_progress():
 # ---------------------------------------------------------------------
 def render_trainer():
     st.title("🎓 Тренажер по комплаенсу")
-    st.caption("⚡ Работает автономно. Не расходует лимиты API.")
 
     courses_db, error = load_courses_db()
     if error:
