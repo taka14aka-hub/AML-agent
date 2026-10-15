@@ -16,32 +16,83 @@ st.set_page_config(page_title="AML Агент - РК", page_icon="🛡️", layo
 # ---------------------------------------------------------------------
 # КОНСТАНТЫ
 # ---------------------------------------------------------------------
-FONT_PATH = "Roboto_Condensed-Regular.ttf"  # положите шрифт в репозиторий
+FONT_CANDIDATES = ["fonts/Roboto-Regular.ttf", "Roboto-Regular.ttf"]
+FONT_PATH = next((p for p in FONT_CANDIDATES if os.path.exists(p)), FONT_CANDIDATES[0])
 COURSES_PATH = "courses.json"
 MEMORY_PATH = "rules_and_memory.txt"
-MIN_ANSWER_WORDS = 8          # защита от ответа в одно слово
-HINT_AFTER_ATTEMPTS = 3       # термины показываем только после N неудач
-MAX_HISTORY_MESSAGES = 12     # сколько последних реплик уходит в модель
-DOCS_TTL_SECONDS = 40 * 3600  # файлы Gemini живут 48 ч, обновляем раньше
+
+PASS_RATIO = 1.0                # доля верных ответов для зачёта модуля (1.0 = все, 0.67 = 2 из 3)
+SHOW_ANSWER_AFTER_ATTEMPTS = 2  # после скольких неудач показывать правильный ответ
+
+MAX_HISTORY_MESSAGES = 12       # сколько последних реплик уходит в модель
+DOCS_TTL_SECONDS = 40 * 3600    # файлы Gemini живут 48 ч, обновляем раньше
 
 
 # ---------------------------------------------------------------------
-# ДАННЫЕ
+# ДАННЫЕ КУРСОВ
 # ---------------------------------------------------------------------
+def validate_courses(data) -> list:
+    """Проверяет структуру courses.json и возвращает список проблем."""
+    if not isinstance(data, dict) or not data:
+        return ["Файл должен содержать объект с курсами."]
+
+    problems = []
+    for course, modules in data.items():
+        if not isinstance(modules, dict) or not modules:
+            problems.append(f"Курс «{course}»: нет модулей.")
+            continue
+
+        for num in range(1, len(modules) + 1):
+            where = f"«{course}», модуль {num}"
+            module = modules.get(str(num))
+            if not isinstance(module, dict):
+                problems.append(f"{where}: нет модуля (номера должны идти подряд: 1, 2, 3...).")
+                continue
+            if not module.get("Теория"):
+                problems.append(f"{where}: пустая «Теория».")
+
+            questions = module.get("Вопросы")
+            if not isinstance(questions, list) or not questions:
+                problems.append(f"{where}: нет списка «Вопросы».")
+                continue
+
+            for i, q in enumerate(questions, 1):
+                w = f"{where}, вопрос {i}"
+                if not isinstance(q, dict):
+                    problems.append(f"{w}: вопрос должен быть объектом (Вопрос, Варианты, Правильный_вариант).")
+                    continue
+                if not q.get("Вопрос"):
+                    problems.append(f"{w}: пустой текст «Вопрос».")
+                options = q.get("Варианты")
+                if not isinstance(options, list) or len(options) < 2:
+                    problems.append(f"{w}: в «Варианты» должно быть минимум 2 варианта.")
+                    continue
+                if len(set(options)) != len(options):
+                    problems.append(f"{w}: варианты ответов повторяются.")
+                correct = q.get("Правильный_вариант")
+                if isinstance(correct, bool) or not isinstance(correct, int) or not 1 <= correct <= len(options):
+                    problems.append(
+                        f"{w}: «Правильный_вариант» должен быть числом от 1 до {len(options)}."
+                    )
+    return problems
+
+
 @st.cache_data(show_spinner=False)
 def load_courses_db():
     """Возвращает (данные, текст_ошибки)."""
     try:
         with open(COURSES_PATH, "r", encoding="utf-8") as f:
-            return json.load(f), None
+            data = json.load(f)
     except FileNotFoundError:
         return None, f"Файл `{COURSES_PATH}` не найден."
     except json.JSONDecodeError as e:
         return None, f"Ошибка JSON в `{COURSES_PATH}`: {e}"
 
-
-def normalize(text: str) -> str:
-    return re.sub(r"\s+", " ", text.lower().replace("ё", "е")).strip()
+    problems = validate_courses(data)
+    if problems:
+        shown = "\n".join(f"- {p}" for p in problems[:15])
+        return None, f"Ошибки в `{COURSES_PATH}`:\n\n{shown}"
+    return data, None
 
 
 # ---------------------------------------------------------------------
@@ -107,23 +158,14 @@ def reset_progress():
     st.session_state.current_module = 1
     st.session_state.course_passed = False
     st.session_state.attempts = {}
+    st.session_state.pop("flash", None)
+    for k in [k for k in st.session_state if str(k).startswith("q_")]:
+        del st.session_state[k]
 
 
 # ---------------------------------------------------------------------
-# РЕЖИМ 1: ТРЕНАЖЕР (ОФЛАЙН)
+# РЕЖИМ 1: ТРЕНАЖЕР-ТЕСТ (ОФЛАЙН)
 # ---------------------------------------------------------------------
-def check_answer(answer: str, keywords: list):
-    """Возвращает (принято, найдено, нужно)."""
-    if len(answer.split()) < MIN_ANSWER_WORDS:
-        return False, 0, len(keywords)
-    if not keywords:
-        return True, 0, 0
-    text = normalize(answer)
-    matched = [kw for kw in keywords if normalize(kw) in text]
-    required = max(1, math.ceil(len(keywords) / 2))
-    return len(matched) >= required, len(matched), required
-
-
 def render_trainer():
     st.title("🎓 Тренажер по комплаенсу")
     st.caption("⚡ Работает автономно. Не расходует лимиты API.")
@@ -148,48 +190,84 @@ def render_trainer():
         return
 
     cur = st.session_state.current_module
-    module = course_data.get(str(cur))
-    if not module:
-        st.error(f"Модуль {cur} не найден в JSON.")
-        st.stop()
+    module = course_data[str(cur)]
+    questions = module["Вопросы"]
+
+    flash = st.session_state.pop("flash", None)
+    if flash:
+        st.success(flash)
 
     st.progress((cur - 1) / total, text=f"Модуль {cur} из {total}")
-    st.markdown(module.get("Теория", "Теория в разработке."))
+    st.markdown(module["Теория"])
+    st.markdown("### Проверочный тест")
+    st.caption(f"Выберите один вариант в каждом вопросе. Для зачёта модуля нужно верно ответить "
+               f"минимум на {math.ceil(len(questions) * PASS_RATIO)} из {len(questions)}.")
 
-    questions = module.get("Вопросы", [])
-    if questions:
-        st.markdown("### Проверочные вопросы")
-        st.markdown("\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1)))
+    def qkey(i: int) -> str:
+        return f"q_{course_topic}_{cur}_{i}"
 
-    # key привязан к модулю: ответ не «переезжает» в следующий модуль
-    answer = st.text_area("Введите ваши ответы:", key=f"answer_{course_topic}_{cur}")
+    with st.form(f"form_{course_topic}_{cur}"):
+        for i, q in enumerate(questions, 1):
+            st.markdown(f"**{i}. {q['Вопрос']}**")
+            st.radio(
+                f"Ответ на вопрос {i}",
+                q["Варианты"],
+                index=None,
+                key=qkey(i),
+                label_visibility="collapsed",
+            )
+        submitted = st.form_submit_button("Проверить ответы")
 
-    if st.button("Отправить на проверку"):
-        keywords = module.get("Ключевые_слова", [])
-        ok, found, required = check_answer(answer, keywords)
+    if submitted:
+        check_quiz(course_topic, cur, total, questions, qkey)
 
-        if ok:
-            st.toast("✅ Принято!")
-            if cur >= total:
-                st.session_state.course_passed = True
-            else:
-                st.session_state.current_module += 1
-            st.rerun()
 
-        attempt_key = f"{course_topic}:{cur}"
-        attempts = st.session_state.attempts.get(attempt_key, 0) + 1
-        st.session_state.attempts[attempt_key] = attempts
+def check_quiz(course_topic, cur, total, questions, qkey):
+    answers = [st.session_state.get(qkey(i)) for i in range(1, len(questions) + 1)]
 
-        st.error("❌ Ответ неполный или неточный.")
-        if len(answer.split()) < MIN_ANSWER_WORDS:
-            st.warning(f"Дайте развёрнутый ответ (минимум {MIN_ANSWER_WORDS} слов).")
+    missing = [str(i) for i, a in enumerate(answers, 1) if a is None]
+    if missing:
+        st.warning("Ответьте на все вопросы. Нет ответа на: " + ", ".join(missing))
+        return
+
+    attempt_key = f"{course_topic}:{cur}"
+    attempts = st.session_state.attempts.get(attempt_key, 0) + 1
+    st.session_state.attempts[attempt_key] = attempts
+
+    results = []
+    for q, answer in zip(questions, answers):
+        correct_text = q["Варианты"][q["Правильный_вариант"] - 1]
+        results.append((answer == correct_text, correct_text, q.get("Пояснение", "")))
+
+    score = sum(ok for ok, _, _ in results)
+    required = math.ceil(len(questions) * PASS_RATIO)
+
+    if score >= required:
+        st.session_state.flash = f"✅ Модуль {cur} пройден: {score} из {len(questions)}."
+        if cur >= total:
+            st.session_state.course_passed = True
         else:
-            st.warning(f"Раскрыто ключевых понятий: {found} из {required} необходимых.")
-        if attempts >= HINT_AFTER_ATTEMPTS and keywords:
-            st.info("💡 Подсказка, термины темы: " + ", ".join(keywords))
+            st.session_state.current_module += 1
+        st.rerun()
+
+    st.markdown(f"### Результат: {score} из {len(questions)}")
+    for i, (ok, correct_text, explanation) in enumerate(results, 1):
+        if ok:
+            st.success(f"Вопрос {i}: верно.")
+        else:
+            text = f"Вопрос {i}: неверно. Перечитайте теорию и выберите другой вариант."
+            if attempts >= SHOW_ANSWER_AFTER_ATTEMPTS:
+                text += f"\n\n**Правильный ответ:** {correct_text}"
+                if explanation:
+                    text += f"\n\n{explanation}"
+            st.error(text)
+    st.info("Исправьте неверные ответы и нажмите «Проверить ответы» ещё раз.")
 
 
 def render_certificate(course_topic: str):
+    flash = st.session_state.pop("flash", None)
+    if flash:
+        st.success(flash)
     st.success("🎉 Вы успешно завершили все модули курса.")
     student_name = st.text_input(
         "Имя и фамилия для сертификата:", placeholder="Например: Азамат Сериков"
@@ -298,7 +376,6 @@ def render_online(task_mode: str):
     st.divider()
     st.subheader(f"💬 Рабочий чат ({task_mode})")
 
-    # История привязана к режиму, чтобы аудит и ответы АРРФР не смешивались
     if st.sidebar.button("🧹 Очистить чат"):
         st.session_state.messages = []
         st.rerun()
