@@ -13,10 +13,9 @@ from fpdf import FPDF
 
 st.set_page_config(page_title="AML Агент - РК", page_icon="🛡️", layout="wide")
 
-# Принудительный перенос текста для длинных ответов
 st.markdown(
     """<style>
-    .stCheckbox label span { 
+    .stCheckbox label span, .stRadio label span { 
         white-space: normal !important; 
         word-break: break-word; 
     }
@@ -32,18 +31,17 @@ FONT_PATH = next((p for p in FONT_CANDIDATES if os.path.exists(p)), FONT_CANDIDA
 COURSES_PATH = "courses.json"
 MEMORY_PATH = "rules_and_memory.txt"
 
-PASS_RATIO = 1.0                # доля верных ответов для зачёта модуля (1.0 = все, 0.67 = 2 из 3)
-SHOW_ANSWER_AFTER_ATTEMPTS = 2  # после скольких неудач показывать правильный ответ
+PASS_RATIO = 1.0                
+SHOW_ANSWER_AFTER_ATTEMPTS = 2  
 
-MAX_HISTORY_MESSAGES = 12       # сколько последних реплик уходит в модель
-DOCS_TTL_SECONDS = 40 * 3600    # файлы Gemini живут 48 ч, обновляем раньше
+MAX_HISTORY_MESSAGES = 12       
+DOCS_TTL_SECONDS = 40 * 3600    
 
 
 # ---------------------------------------------------------------------
 # ДАННЫЕ КУРСОВ
 # ---------------------------------------------------------------------
 def validate_courses(data) -> list:
-    """Проверяет структуру courses.json и возвращает список проблем."""
     if not isinstance(data, dict) or not data:
         return ["Файл должен содержать объект с курсами."]
 
@@ -62,6 +60,18 @@ def validate_courses(data) -> list:
             if not module.get("Теория"):
                 problems.append(f"{where}: пустая «Теория».")
 
+            # Валидация мини-теста
+            minitest = module.get("Мини_тест")
+            if not isinstance(minitest, list) or len(minitest) != 3:
+                problems.append(f"{where}: массив «Мини_тест» должен содержать ровно 3 вопроса.")
+            else:
+                for i, mq in enumerate(minitest, 1):
+                    w_mini = f"{where}, мини-тест {i}"
+                    m_options = mq.get("Варианты", [])
+                    if len(m_options) != 3:
+                        problems.append(f"{w_mini}: должно быть ровно 3 варианта ответа.")
+
+            # Валидация основного теста
             questions = module.get("Вопросы")
             if not isinstance(questions, list) or not questions:
                 problems.append(f"{where}: нет списка «Вопросы».")
@@ -78,8 +88,6 @@ def validate_courses(data) -> list:
                 if not isinstance(options, list) or len(options) < 2:
                     problems.append(f"{w}: в «Варианты» должно быть минимум 2 варианта.")
                     continue
-                if len(set(options)) != len(options):
-                    problems.append(f"{w}: варианты ответов повторяются.")
                 
                 corrects = q.get("Правильные_варианты")
                 if not isinstance(corrects, list) or not corrects or not all(isinstance(c, int) and 1 <= c <= len(options) for c in corrects):
@@ -91,7 +99,6 @@ def validate_courses(data) -> list:
 
 @st.cache_data(show_spinner=False)
 def load_courses_db():
-    """Возвращает (данные, текст_ошибки)."""
     try:
         with open(COURSES_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -112,7 +119,6 @@ def load_courses_db():
 # ---------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def build_certificate(course_name: str, student_name: str, date_str: str) -> bytes:
-    """Кэшируется: не пересобирается при каждом rerun Streamlit."""
     if not os.path.exists(FONT_PATH):
         raise FileNotFoundError(f"Нет шрифта {FONT_PATH}")
 
@@ -159,6 +165,7 @@ def build_certificate(course_name: str, student_name: str, date_str: str) -> byt
 DEFAULTS = {
     "messages": [],
     "current_module": 1,
+    "module_phase": "theory", # Может быть 'theory' или 'test'
     "course_passed": False,
     "attempts": {},
 }
@@ -168,10 +175,11 @@ for key, value in DEFAULTS.items():
 
 def reset_progress():
     st.session_state.current_module = 1
+    st.session_state.module_phase = "theory"
     st.session_state.course_passed = False
     st.session_state.attempts = {}
     st.session_state.pop("flash", None)
-    for k in [k for k in st.session_state if str(k).startswith("q_")]:
+    for k in [k for k in st.session_state if str(k).startswith("q_") or str(k).startswith("mini_")]:
         del st.session_state[k]
 
 
@@ -180,7 +188,7 @@ def reset_progress():
 # ---------------------------------------------------------------------
 def render_trainer():
     st.title("🎓 Тренажер по комплаенсу")
-    st.caption("⚡ Работает автономно. Не расходует лимиты API.")
+  
 
     courses_db, error = load_courses_db()
     if error:
@@ -202,49 +210,93 @@ def render_trainer():
 
     cur = st.session_state.current_module
     module = course_data[str(cur)]
-    questions = module["Вопросы"]
-
+    
     flash = st.session_state.pop("flash", None)
     if flash:
         st.success(flash)
 
     st.progress((cur - 1) / total, text=f"Модуль {cur} из {total}")
-    st.markdown(module["Теория"])
-    
-    if "Кейсы" in module:
-        st.markdown("### Практические кейсы")
-        for idx, case in enumerate(module["Кейсы"], 1):
-            with st.expander(f"Кейс {idx}: {case.get('Название', 'Без названия')}"):
-                st.markdown(f"**Что произошло:** {case.get('Что произошло', '')}")
-                if "Что можно было заметить" in case:
-                    st.markdown(f"**Что можно было заметить:** {case.get('Что можно было заметить', '')}")
-                st.markdown(f"**Урок для комплаенса:** {case.get('Урок для комплаенса', '')}")
-                if "Источник" in case:
-                    st.caption(f"Источник: {case.get('Источник', '')}")
 
-    st.markdown("### Проверочный тест")
-    st.caption(f"Отметьте **все верные варианты** в каждом вопросе. Для зачёта нужно верно ответить "
-               f"минимум на {math.ceil(len(questions) * PASS_RATIO)} из {len(questions)}.")
+    # ФАЗА 1: Обучение и мини-тест
+    if st.session_state.module_phase == "theory":
+        st.markdown(module["Теория"])
+        
+        if "Кейсы" in module:
+            st.markdown("### Практические кейсы")
+            for idx, case in enumerate(module["Кейсы"], 1):
+                with st.expander(f"Кейс {idx}: {case.get('Название', 'Без названия')}"):
+                    st.markdown(f"**Что произошло:** {case.get('Что произошло', '')}")
+                    if "Что можно было заметить" in case:
+                        st.markdown(f"**Что можно было заметить:** {case.get('Что можно было заметить', '')}")
+                    st.markdown(f"**Урок для комплаенса:** {case.get('Урок для комплаенса', '')}")
+                    if "Источник" in case:
+                        st.caption(f"Источник: {case.get('Источник', '')}")
 
-    def qkey(i: int) -> str:
-        return f"q_{course_topic}_{cur}_{i}"
+        st.divider()
+        st.warning("⚠️ **Внимание!** После перехода к основному тесту вернуться к теории будет нельзя. Рекомендуем внимательно ознакомиться с материалом.")
+        st.markdown("### Мини-тест для допуска к экзамену")
+        
+        minitest = module["Мини_тест"]
+        def mkey(i: int) -> str:
+            return f"mini_{course_topic}_{cur}_{i}"
 
-    with st.form(f"form_{course_topic}_{cur}"):
-        for i, q in enumerate(questions, 1):
-            st.markdown(f"**{i}. {q['Вопрос']}**")
-            # Используем чекбоксы вместо выпадающего списка
-            for j, option in enumerate(q["Варианты"]):
-                st.checkbox(option, key=f"{qkey(i)}_{j}")
-            st.write("") # Небольшой отступ между вопросами
+        with st.form(f"mini_form_{course_topic}_{cur}"):
+            for i, mq in enumerate(minitest, 1):
+                st.markdown(f"**{i}. {mq['Вопрос']}**")
+                st.radio(
+                    f"Ответ на мини-вопрос {i}",
+                    mq["Варианты"],
+                    index=None,
+                    key=mkey(i),
+                    label_visibility="collapsed"
+                )
+                st.write("")
+            mini_submitted = st.form_submit_button("Пройти мини-тест и начать экзамен")
 
-        submitted = st.form_submit_button("Проверить ответы")
+        if mini_submitted:
+            mini_answers = [st.session_state.get(mkey(i)) for i in range(1, 4)]
+            if None in mini_answers:
+                st.error("Пожалуйста, ответьте на все 3 вопроса мини-теста.")
+            else:
+                correct_count = 0
+                for i, (mq, ans) in enumerate(zip(minitest, mini_answers)):
+                    correct_idx = mq["Правильные_варианты"][0] - 1
+                    if ans == mq["Варианты"][correct_idx]:
+                        correct_count += 1
+                
+                if correct_count == 3:
+                    st.session_state.module_phase = "test"
+                    st.session_state.flash = "Допуск получен! Успешной сдачи основного экзамена."
+                    st.rerun()
+                else:
+                    st.error(f"Мини-тест не пройден ({correct_count} из 3). Внимательно перечитайте теорию и попробуйте снова.")
 
-    if submitted:
-        check_quiz(course_topic, cur, total, questions, qkey)
+    # ФАЗА 2: Основной тест
+    elif st.session_state.module_phase == "test":
+        st.info("📚 Режим тестирования. Возврат к теории закрыт.")
+        st.markdown(f"### Экзамен: Модуль {cur}")
+        
+        questions = module["Вопросы"]
+        st.caption(f"Отметьте **все верные варианты** в каждом вопросе. Для зачёта нужно верно ответить "
+                   f"минимум на {math.ceil(len(questions) * PASS_RATIO)} из {len(questions)}.")
+
+        def qkey(i: int) -> str:
+            return f"q_{course_topic}_{cur}_{i}"
+
+        with st.form(f"form_{course_topic}_{cur}"):
+            for i, q in enumerate(questions, 1):
+                st.markdown(f"**{i}. {q['Вопрос']}**")
+                for j, option in enumerate(q["Варианты"]):
+                    st.checkbox(option, key=f"{qkey(i)}_{j}")
+                st.write("") 
+
+            submitted = st.form_submit_button("Проверить ответы")
+
+        if submitted:
+            check_quiz(course_topic, cur, total, questions, qkey)
 
 
 def check_quiz(course_topic, cur, total, questions, qkey):
-    # Сбор выбранных чекбоксов для каждого вопроса
     answers = []
     for i, q in enumerate(questions, 1):
         selected_options = []
@@ -253,13 +305,12 @@ def check_quiz(course_topic, cur, total, questions, qkey):
                 selected_options.append(option)
         answers.append(selected_options)
 
-    # Проверка, что на каждый вопрос дан хотя бы один ответ
     missing = [str(i) for i, a in enumerate(answers, 1) if not a]
     if missing:
         st.warning("Ответьте на все вопросы. Нет ответа на: " + ", ".join(missing))
         return
 
-    attempt_key = f"{course_topic}:{cur}"
+    attempt_key = f"{course_topic}:{cur}:main"
     attempts = st.session_state.attempts.get(attempt_key, 0) + 1
     st.session_state.attempts[attempt_key] = attempts
 
@@ -280,6 +331,7 @@ def check_quiz(course_topic, cur, total, questions, qkey):
             st.session_state.course_passed = True
         else:
             st.session_state.current_module += 1
+            st.session_state.module_phase = "theory" # Сбрасываем фазу для следующего модуля
         st.rerun()
 
     st.markdown(f"### Результат: {score} из {len(questions)}")
@@ -287,7 +339,7 @@ def check_quiz(course_topic, cur, total, questions, qkey):
         if ok:
             st.success(f"Вопрос {i}: верно.")
         else:
-            text = f"Вопрос {i}: неверно. Перечитайте теорию и попробуйте снова."
+            text = f"Вопрос {i}: неверно."
             if attempts >= SHOW_ANSWER_AFTER_ATTEMPTS:
                 text += f"\n\n**Правильные ответы:** {correct_texts_str}"
                 if explanation:
@@ -333,7 +385,6 @@ def render_certificate(course_topic: str):
 # ---------------------------------------------------------------------
 @st.cache_resource(ttl=DOCS_TTL_SECONDS, show_spinner="Синхронизация документов...")
 def upload_documents():
-    """Один раз на всё приложение (а не на каждую сессию пользователя)."""
     files = []
     for path in sorted(glob.glob("*.pdf")):
         f = genai.upload_file(path=path)
@@ -348,7 +399,6 @@ def upload_documents():
 
 
 def build_contents(doc_files, messages):
-    """Документы + история диалога, чтобы модель помнила контекст."""
     contents = []
     if doc_files:
         contents.append({"role": "user", "parts": [*doc_files, "Это нормативная база. Опирайся на неё."]})
@@ -446,7 +496,6 @@ with st.sidebar:
     )
     st.divider()
 
-# при смене режима чат не тянем из другого режима
 if st.session_state.get("_mode_seen") != task_mode:
     st.session_state["_mode_seen"] = task_mode
     st.session_state.messages = []
