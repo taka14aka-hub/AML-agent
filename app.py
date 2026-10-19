@@ -13,6 +13,17 @@ from fpdf import FPDF
 
 st.set_page_config(page_title="AML Агент - РК", page_icon="🛡️", layout="wide")
 
+# Принудительный перенос текста для длинных ответов
+st.markdown(
+    """<style>
+    .stCheckbox label span { 
+        white-space: normal !important; 
+        word-break: break-word; 
+    }
+    </style>""",
+    unsafe_allow_html=True,
+)
+
 # ---------------------------------------------------------------------
 # КОНСТАНТЫ
 # ---------------------------------------------------------------------
@@ -212,7 +223,7 @@ def render_trainer():
                     st.caption(f"Источник: {case.get('Источник', '')}")
 
     st.markdown("### Проверочный тест")
-    st.caption(f"Выберите все верные варианты в каждом вопросе. Для зачёта модуля нужно верно ответить "
+    st.caption(f"Отметьте **все верные варианты** в каждом вопросе. Для зачёта нужно верно ответить "
                f"минимум на {math.ceil(len(questions) * PASS_RATIO)} из {len(questions)}.")
 
     def qkey(i: int) -> str:
@@ -221,14 +232,11 @@ def render_trainer():
     with st.form(f"form_{course_topic}_{cur}"):
         for i, q in enumerate(questions, 1):
             st.markdown(f"**{i}. {q['Вопрос']}**")
-            st.multiselect(
-                f"Ответ на вопрос {i}",
-                q["Варианты"],
-                default=None,
-                key=qkey(i),
-                label_visibility="collapsed",
-                placeholder="Выберите верные варианты..."
-            )
+            # Используем чекбоксы вместо выпадающего списка
+            for j, option in enumerate(q["Варианты"]):
+                st.checkbox(option, key=f"{qkey(i)}_{j}")
+            st.write("") # Небольшой отступ между вопросами
+
         submitted = st.form_submit_button("Проверить ответы")
 
     if submitted:
@@ -236,8 +244,16 @@ def render_trainer():
 
 
 def check_quiz(course_topic, cur, total, questions, qkey):
-    answers = [st.session_state.get(qkey(i)) for i in range(1, len(questions) + 1)]
+    # Сбор выбранных чекбоксов для каждого вопроса
+    answers = []
+    for i, q in enumerate(questions, 1):
+        selected_options = []
+        for j, option in enumerate(q["Варианты"]):
+            if st.session_state.get(f"{qkey(i)}_{j}"):
+                selected_options.append(option)
+        answers.append(selected_options)
 
+    # Проверка, что на каждый вопрос дан хотя бы один ответ
     missing = [str(i) for i, a in enumerate(answers, 1) if not a]
     if missing:
         st.warning("Ответьте на все вопросы. Нет ответа на: " + ", ".join(missing))
@@ -253,7 +269,7 @@ def check_quiz(course_topic, cur, total, questions, qkey):
         correct_texts = [q["Варианты"][idx - 1] for idx in correct_indices]
         
         is_correct = set(answer_list) == set(correct_texts)
-        results.append((is_correct, ", ".join(correct_texts), q.get("Пояснение", "")))
+        results.append((is_correct, "\n- ".join([""] + correct_texts), q.get("Пояснение", "")))
 
     score = sum(ok for ok, _, _ in results)
     required = math.ceil(len(questions) * PASS_RATIO)
@@ -274,168 +290,3 @@ def check_quiz(course_topic, cur, total, questions, qkey):
             text = f"Вопрос {i}: неверно. Перечитайте теорию и попробуйте снова."
             if attempts >= SHOW_ANSWER_AFTER_ATTEMPTS:
                 text += f"\n\n**Правильные ответы:** {correct_texts_str}"
-                if explanation:
-                    text += f"\n\n{explanation}"
-            st.error(text)
-    st.info("Исправьте неверные ответы и нажмите «Проверить ответы» ещё раз.")
-
-
-def render_certificate(course_topic: str):
-    flash = st.session_state.pop("flash", None)
-    if flash:
-        st.success(flash)
-    st.success("🎉 Вы успешно завершили все модули курса.")
-    student_name = st.text_input(
-        "Имя и фамилия для сертификата:", placeholder="Например: Азамат Сериков"
-    ).strip()
-
-    if student_name:
-        try:
-            pdf_bytes = build_certificate(
-                course_topic, student_name, datetime.now().strftime("%d.%m.%Y")
-            )
-            safe_name = re.sub(r"[^\w\-]+", "_", student_name)
-            st.download_button(
-                "📥 Скачать сертификат (PDF)",
-                data=pdf_bytes,
-                file_name=f"Certificate_{safe_name}.pdf",
-                mime="application/pdf",
-            )
-        except FileNotFoundError as e:
-            st.error(f"Не удалось создать сертификат: {e}")
-    else:
-        st.info("👆 Введите имя, чтобы появилась кнопка скачивания.")
-
-    st.divider()
-    if st.button("Начать новый курс"):
-        reset_progress()
-        st.rerun()
-
-
-# ---------------------------------------------------------------------
-# РЕЖИМ 2: АУДИТ / АРРФР (GEMINI)
-# ---------------------------------------------------------------------
-@st.cache_resource(ttl=DOCS_TTL_SECONDS, show_spinner="Синхронизация документов...")
-def upload_documents():
-    """Один раз на всё приложение (а не на каждую сессию пользователя)."""
-    files = []
-    for path in sorted(glob.glob("*.pdf")):
-        f = genai.upload_file(path=path)
-        while f.state.name == "PROCESSING":
-            time.sleep(2)
-            f = genai.get_file(f.name)
-        if f.state.name == "ACTIVE":
-            files.append(f)
-        else:
-            st.warning(f"Файл {path} не обработан (статус {f.state.name}).")
-    return files
-
-
-def build_contents(doc_files, messages):
-    """Документы + история диалога, чтобы модель помнила контекст."""
-    contents = []
-    if doc_files:
-        contents.append({"role": "user", "parts": [*doc_files, "Это нормативная база. Опирайся на неё."]})
-        contents.append({"role": "model", "parts": ["Принято."]})
-    for m in messages[-MAX_HISTORY_MESSAGES:]:
-        role = "user" if m["role"] == "user" else "model"
-        contents.append({"role": role, "parts": [m["content"]]})
-    return contents
-
-
-def render_online(task_mode: str):
-    st.title("🛡️ ИИ-Агент по AML Комплаенсу (РК)")
-
-    try:
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    except KeyError:
-        st.error("API-ключ `GEMINI_API_KEY` не найден в secrets.")
-        st.stop()
-
-    model_name = st.secrets.get("GEMINI_MODEL", "gemini-1.5-pro")
-    st.sidebar.success("API ключ подключен 🟢")
-    st.sidebar.caption(f"Модель: {model_name}")
-
-    st.subheader("📂 Нормативная база")
-    try:
-        doc_files = upload_documents()
-    except Exception as e:
-        st.error(f"Ошибка загрузки документов: {e}")
-        doc_files = []
-    if doc_files:
-        st.success(f"Документов в памяти ИИ: {len(doc_files)}")
-    else:
-        st.info("Нет PDF-файлов. Положите их в корень репозитория.")
-
-    try:
-        with open(MEMORY_PATH, "r", encoding="utf-8") as f:
-            long_term_memory = f.read()
-    except FileNotFoundError:
-        long_term_memory = ""
-
-    mode_instructions = (
-        "Твоя задача — аудит ПВК. Ищи риски, уязвимости и несоответствия законам РК. "
-        "Предлагай конкретные формулировки."
-        if task_mode == "Аудит ПВК и регламентов"
-        else "Твоя задача — подготовка ответа для АРРФР. Защищай интересы МФО, ссылайся на нормы права, "
-             "пиши в строгом деловом стиле."
-    )
-    system_instruction = (
-        "Ты — ведущий ИИ-методолог по AML в Казахстане.\n"
-        f"{long_term_memory}\n"
-        f"ТЕКУЩАЯ ЗАДАЧА: {mode_instructions}\n"
-        "ПРАВИЛА: ссылайся на конкретные документы и статьи из загруженной базы. "
-        "Если нормы нет в базе или ты не уверен в ней — прямо скажи об этом, не выдумывай номера статей и цитаты. "
-        "В конце отмечай, что вывод требует проверки ответственным сотрудником."
-    )
-
-    st.divider()
-    st.subheader(f"💬 Рабочий чат ({task_mode})")
-
-    if st.sidebar.button("🧹 Очистить чат"):
-        st.session_state.messages = []
-        st.rerun()
-
-    for m in st.session_state.messages:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
-
-    if prompt := st.chat_input("Опишите задачу или вставьте выдержку из документа..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            with st.spinner("Анализирую..."):
-                try:
-                    model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
-                    response = model.generate_content(build_contents(doc_files, st.session_state.messages))
-                    text = response.text
-                except ValueError:
-                    text = "⚠️ Модель не вернула текст (возможно, сработал фильтр). Переформулируйте запрос."
-                except Exception as e:
-                    text = f"⚠️ Ошибка API: {e}"
-            st.markdown(text)
-        st.session_state.messages.append({"role": "assistant", "content": text})
-
-
-# ---------------------------------------------------------------------
-# ТОЧКА ВХОДА
-# ---------------------------------------------------------------------
-with st.sidebar:
-    st.header("⚙️ Настройки и Статус")
-    task_mode = st.selectbox(
-        "Режим работы:",
-        ("🎓 Обучающий тренажер (Офлайн)", "Аудит ПВК и регламентов", "Ответ на запрос/жалобу АРРФР"),
-    )
-    st.divider()
-
-# при смене режима чат не тянем из другого режима
-if st.session_state.get("_mode_seen") != task_mode:
-    st.session_state["_mode_seen"] = task_mode
-    st.session_state.messages = []
-
-if task_mode.startswith("🎓"):
-    render_trainer()
-else:
-    render_online(task_mode)
