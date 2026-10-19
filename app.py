@@ -375,3 +375,199 @@ def check_quiz(course_topic, cur, total, questions, qkey):
         answers.append(selected_options)
 
     missing = [str(i) for i, a in enumerate(answers, 1) if not a]
+    if missing:
+        st.warning("Ответьте на все вопросы. Нет ответа на: " + ", ".join(missing))
+        return
+
+    attempt_key = f"{course_topic}:{cur}:main"
+    attempts = st.session_state.attempts.get(attempt_key, 0) + 1
+    st.session_state.attempts[attempt_key] = attempts
+
+    results = []
+    for q, answer_list in zip(questions, answers):
+        correct_indices = q["Правильные_варианты"]
+        correct_texts = [q["Варианты"][idx - 1] for idx in correct_indices]
+        
+        is_correct = set(answer_list) == set(correct_texts)
+        results.append((is_correct, "\n- ".join([""] + correct_texts), q.get("Пояснение", "")))
+
+    score = sum(ok for ok, _, _ in results)
+    required = math.ceil(len(questions) * PASS_RATIO)
+
+    if score >= required:
+        st.session_state.flash = f"✅ Модуль {cur} пройден: {score} из {len(questions)}."
+        if cur >= total:
+            st.session_state.course_passed = True
+        else:
+            st.session_state.current_module += 1
+            st.session_state.module_phase = "theory" 
+        save_user_progress() # Автосохранение прогресса
+        st.rerun()
+
+    st.markdown(f"### Результат: {score} из {len(questions)}")
+    for i, (ok, correct_texts_str, explanation) in enumerate(results, 1):
+        if ok:
+            st.success(f"Вопрос {i}: верно.")
+        else:
+            text = f"Вопрос {i}: неверно."
+            if attempts >= SHOW_ANSWER_AFTER_ATTEMPTS:
+                text += f"\n\n**Правильные ответы:** {correct_texts_str}"
+                if explanation:
+                    text += f"\n\n{explanation}"
+            st.error(text)
+    st.info("Исправьте неверные ответы и нажмите «Проверить ответы» ещё раз.")
+
+def render_certificate(course_topic: str):
+    flash = st.session_state.pop("flash", None)
+    if flash:
+        st.success(flash)
+    
+    st.success("🎉 Вы успешно завершили все модули курса.")
+    
+    # Автоматически берем имя из сессии, так как пользователь уже авторизовался
+    student_name = st.session_state.student_name
+
+    try:
+        pdf_bytes = build_certificate(
+            course_topic, student_name, datetime.now().strftime("%d.%m.%Y")
+        )
+        safe_name = re.sub(r"[^\w\-]+", "_", student_name)
+        st.download_button(
+            "📥 Скачать сертификат (PDF)",
+            data=pdf_bytes,
+            file_name=f"Certificate_{safe_name}.pdf",
+            mime="application/pdf",
+        )
+    except FileNotFoundError as e:
+        st.error(f"Не удалось создать сертификат: {e}")
+
+    st.divider()
+    if st.button("Начать новый курс"):
+        reset_progress(clear_user=False)
+        st.rerun()
+
+# ---------------------------------------------------------------------
+# РЕЖИМ 2: АУДИТ / АРРФР (GEMINI)
+# ---------------------------------------------------------------------
+@st.cache_resource(ttl=DOCS_TTL_SECONDS, show_spinner="Синхронизация документов...")
+def upload_documents():
+    files = []
+    for path in sorted(glob.glob("*.pdf")):
+        f = genai.upload_file(path=path)
+        while f.state.name == "PROCESSING":
+            time.sleep(2)
+            f = genai.get_file(f.name)
+        if f.state.name == "ACTIVE":
+            files.append(f)
+        else:
+            st.warning(f"Файл {path} не обработан (статус {f.state.name}).")
+    return files
+
+def build_contents(doc_files, messages):
+    contents = []
+    if doc_files:
+        contents.append({"role": "user", "parts": [*doc_files, "Это нормативная база. Опирайся на неё."]})
+        contents.append({"role": "model", "parts": ["Принято."]})
+    for m in messages[-MAX_HISTORY_MESSAGES:]:
+        role = "user" if m["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [m["content"]]})
+    return contents
+
+def render_online(task_mode: str):
+    st.title("🛡️ ИИ-Агент по AML Комплаенсу (РК)")
+
+    try:
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    except KeyError:
+        st.error("API-ключ `GEMINI_API_KEY` не найден в secrets.")
+        st.stop()
+
+    model_name = st.secrets.get("GEMINI_MODEL", "gemini-1.5-pro")
+    st.sidebar.success("API ключ подключен 🟢")
+    st.sidebar.caption(f"Модель: {model_name}")
+
+    st.subheader("📂 Нормативная база")
+    try:
+        doc_files = upload_documents()
+    except Exception as e:
+        st.error(f"Ошибка загрузки документов: {e}")
+        doc_files = []
+    if doc_files:
+        st.success(f"Документов в памяти ИИ: {len(doc_files)}")
+    else:
+        st.info("Нет PDF-файлов. Положите их в корень репозитория.")
+
+    try:
+        with open(MEMORY_PATH, "r", encoding="utf-8") as f:
+            long_term_memory = f.read()
+    except FileNotFoundError:
+        long_term_memory = ""
+
+    mode_instructions = (
+        "Твоя задача — аудит ПВК. Ищи риски, уязвимости и несоответствия законам РК. "
+        "Предлагай конкретные формулировки."
+        if task_mode == "Аудит ПВК и регламентов"
+        else "Твоя задача — подготовка ответа для АРРФР. Защищай интересы МФО, ссылайся на нормы права, "
+             "пиши в строгом деловом стиле."
+    )
+    system_instruction = (
+        "Ты — ведущий ИИ-методолог по AML в Казахстане.\n"
+        f"{long_term_memory}\n"
+        f"ТЕКУЩАЯ ЗАДАЧА: {mode_instructions}\n"
+        "ПРАВИЛА: ссылайся на конкретные документы и статьи из загруженной базы. "
+        "Если нормы нет в базе или ты не уверен в ней — прямо скажи об этом, не выдумывай номера статей и цитаты. "
+        "В конце отмечай, что вывод требует проверки ответственным сотрудником."
+    )
+
+    st.divider()
+    st.subheader(f"💬 Рабочий чат ({task_mode})")
+
+    if st.sidebar.button("🧹 Очистить чат"):
+        st.session_state.messages = []
+        st.rerun()
+
+    for m in st.session_state.messages:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+
+    if prompt := st.chat_input("Опишите задачу или вставьте выдержку из документа..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Анализирую..."):
+                try:
+                    model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
+                    response = model.generate_content(build_contents(doc_files, st.session_state.messages))
+                    text = response.text
+                except ValueError:
+                    text = "⚠️ Модель не вернула текст (возможно, сработал фильтр). Переформулируйте запрос."
+                except Exception as e:
+                    text = f"⚠️ Ошибка API: {e}"
+            st.markdown(text)
+        st.session_state.messages.append({"role": "assistant", "content": text})
+
+# ---------------------------------------------------------------------
+# ТОЧКА ВХОДА
+# ---------------------------------------------------------------------
+with st.sidebar:
+    st.header("⚙️ Настройки и Статус")
+    task_mode = st.selectbox(
+        "Режим работы:",
+        ("🎓 Обучающий тренажер (Офлайн)", "Аудит ПВК и регламентов", "Ответ на запрос/жалобу АРРФР"),
+    )
+    st.divider()
+
+if st.session_state.get("_mode_seen") != task_mode:
+    st.session_state["_mode_seen"] = task_mode
+    st.session_state.messages = []
+
+# Маршрутизация с учетом авторизации
+if task_mode.startswith("🎓"):
+    if not st.session_state.student_name:
+        render_login()
+    else:
+        render_trainer()
+else:
+    render_online(task_mode)
