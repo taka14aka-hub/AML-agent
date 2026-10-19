@@ -28,15 +28,15 @@ st.markdown(
 # ---------------------------------------------------------------------
 FONT_CANDIDATES = ["Roboto_Condensed-Regular.ttf"]
 FONT_PATH = next((p for p in FONT_CANDIDATES if os.path.exists(p)), FONT_CANDIDATES[0])
-COURSES_PATH = "courses.json"
+COURSES_PATH = os.path.join("data", "courses.json")
+PROGRESS_PATH = os.path.join("data", "progress.json")
 MEMORY_PATH = "rules_and_memory.txt"
 
 PASS_RATIO = 1.0                
 SHOW_ANSWER_AFTER_ATTEMPTS = 2  
-
 MAX_HISTORY_MESSAGES = 12       
 DOCS_TTL_SECONDS = 40 * 3600    
-
+PROGRESS_TTL_SECONDS = 24 * 3600 # 24 часа для сохранения прогресса
 
 # ---------------------------------------------------------------------
 # ДАННЫЕ КУРСОВ
@@ -44,13 +44,11 @@ DOCS_TTL_SECONDS = 40 * 3600
 def validate_courses(data) -> list:
     if not isinstance(data, dict) or not data:
         return ["Файл должен содержать объект с курсами."]
-
     problems = []
     for course, modules in data.items():
         if not isinstance(modules, dict) or not modules:
             problems.append(f"Курс «{course}»: нет модулей.")
             continue
-
         for num in range(1, len(modules) + 1):
             where = f"«{course}», модуль {num}"
             module = modules.get(str(num))
@@ -60,7 +58,6 @@ def validate_courses(data) -> list:
             if not module.get("Теория"):
                 problems.append(f"{where}: пустая «Теория».")
 
-            # Валидация мини-теста
             minitest = module.get("Мини_тест")
             if not isinstance(minitest, list) or len(minitest) != 3:
                 problems.append(f"{where}: массив «Мини_тест» должен содержать ровно 3 вопроса.")
@@ -71,7 +68,6 @@ def validate_courses(data) -> list:
                     if len(m_options) != 3:
                         problems.append(f"{w_mini}: должно быть ровно 3 варианта ответа.")
 
-            # Валидация основного теста
             questions = module.get("Вопросы")
             if not isinstance(questions, list) or not questions:
                 problems.append(f"{where}: нет списка «Вопросы».")
@@ -91,11 +87,8 @@ def validate_courses(data) -> list:
                 
                 corrects = q.get("Правильные_варианты")
                 if not isinstance(corrects, list) or not corrects or not all(isinstance(c, int) and 1 <= c <= len(options) for c in corrects):
-                    problems.append(
-                        f"{w}: «Правильные_варианты» должен быть списком чисел от 1 до {len(options)}."
-                    )
+                    problems.append(f"{w}: «Правильные_варианты» должен быть списком чисел от 1 до {len(options)}.")
     return problems
-
 
 @st.cache_data(show_spinner=False)
 def load_courses_db():
@@ -103,7 +96,7 @@ def load_courses_db():
         with open(COURSES_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        return None, f"Файл `{COURSES_PATH}` не найден."
+        return None, f"Файл `{COURSES_PATH}` не найден. Убедитесь, что он лежит в папке data."
     except json.JSONDecodeError as e:
         return None, f"Ошибка JSON в `{COURSES_PATH}`: {e}"
 
@@ -112,7 +105,6 @@ def load_courses_db():
         shown = "\n".join(f"- {p}" for p in problems[:15])
         return None, f"Ошибки в `{COURSES_PATH}`:\n\n{shown}"
     return data, None
-
 
 # ---------------------------------------------------------------------
 # СЕРТИФИКАТ
@@ -158,22 +150,64 @@ def build_certificate(course_name: str, student_name: str, date_str: str) -> byt
     pdf.cell(0, 8, f"Дата / Күні: {date_str}   |   № {cert_id}", align="C")
     return bytes(pdf.output())
 
-
 # ---------------------------------------------------------------------
-# СОСТОЯНИЕ
+# СОСТОЯНИЕ И СОХРАНЕНИЕ ПРОГРЕССА
 # ---------------------------------------------------------------------
 DEFAULTS = {
     "messages": [],
     "current_module": 1,
-    "module_phase": "theory", # Может быть 'theory' или 'test'
+    "module_phase": "theory", 
     "course_passed": False,
     "attempts": {},
+    "student_name": None,
+    "_course_seen": None
 }
 for key, value in DEFAULTS.items():
     st.session_state.setdefault(key, value)
 
+def get_all_progress():
+    if os.path.exists(PROGRESS_PATH):
+        try:
+            with open(PROGRESS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
 
-def reset_progress():
+def save_user_progress():
+    """Сохраняет текущий прогресс пользователя в JSON файл."""
+    if not st.session_state.student_name:
+        return
+    
+    os.makedirs(os.path.dirname(PROGRESS_PATH), exist_ok=True)
+    prog = get_all_progress()
+    prog[st.session_state.student_name] = {
+        "course_topic": st.session_state._course_seen,
+        "current_module": st.session_state.current_module,
+        "module_phase": st.session_state.module_phase,
+        "course_passed": st.session_state.course_passed,
+        "timestamp": time.time()
+    }
+    with open(PROGRESS_PATH, "w", encoding="utf-8") as f:
+        json.dump(prog, f, ensure_ascii=False, indent=2)
+
+def load_user_progress(student_name: str) -> bool:
+    """Загружает прогресс. Возвращает True, если есть свежий прогресс."""
+    prog = get_all_progress()
+    user_data = prog.get(student_name)
+    if user_data:
+        # Проверяем не истек ли срок (24 часа)
+        if time.time() - user_data.get("timestamp", 0) > PROGRESS_TTL_SECONDS:
+            return False 
+        
+        st.session_state._course_seen = user_data.get("course_topic")
+        st.session_state.current_module = user_data.get("current_module", 1)
+        st.session_state.module_phase = user_data.get("module_phase", "theory")
+        st.session_state.course_passed = user_data.get("course_passed", False)
+        return True
+    return False
+
+def reset_progress(clear_user=False):
     st.session_state.current_module = 1
     st.session_state.module_phase = "theory"
     st.session_state.course_passed = False
@@ -181,21 +215,56 @@ def reset_progress():
     st.session_state.pop("flash", None)
     for k in [k for k in st.session_state if str(k).startswith("q_") or str(k).startswith("mini_")]:
         del st.session_state[k]
+    if clear_user:
+        st.session_state.student_name = None
+        st.session_state._course_seen = None
+    else:
+        save_user_progress() # Перезаписываем сброшенный прогресс в файл
 
+# ---------------------------------------------------------------------
+# АВТОРИЗАЦИЯ
+# ---------------------------------------------------------------------
+def render_login():
+    st.title("🎓 Вход в Тренажер по комплаенсу")
+    st.info("ℹ️ Пожалуйста, введите ваше ФИО. Если вы случайно закроете вкладку или отключится интернет, ваш прогресс сохранится на 24 часа.")
+    
+    with st.form("login_form"):
+        name_input = st.text_input("Ваше ФИО (Имя и Фамилия):", placeholder="Например: Азамат Сериков")
+        submitted = st.form_submit_button("Начать обучение")
+        
+        if submitted:
+            if len(name_input.strip()) > 3:
+                st.session_state.student_name = name_input.strip()
+                if load_user_progress(st.session_state.student_name):
+                    st.success(f"С возвращением, {st.session_state.student_name}! Прогресс восстановлен.")
+                    time.sleep(1)
+                else:
+                    reset_progress(clear_user=False)
+                st.rerun()
+            else:
+                st.error("Пожалуйста, введите корректное имя.")
 
 # ---------------------------------------------------------------------
 # РЕЖИМ 1: ТРЕНАЖЕР-ТЕСТ (ОФЛАЙН)
 # ---------------------------------------------------------------------
 def render_trainer():
     st.title("🎓 Тренажер по комплаенсу")
-  
+    
+    # Кнопка выхода из профиля
+    col1, col2 = st.columns([8, 2])
+    with col1:
+        st.caption(f"👤 Ученик: **{st.session_state.student_name}** | ⚡ Автоматическое сохранение прогресса")
+    with col2:
+        if st.button("Выйти из профиля", use_container_width=True):
+            reset_progress(clear_user=True)
+            st.rerun()
 
     courses_db, error = load_courses_db()
     if error:
         st.error(error)
         st.stop()
 
-    course_topic = st.selectbox("Выберите курс для изучения:", list(courses_db.keys()))
+    course_topic = st.selectbox("Выберите курс для изучения:", list(courses_db.keys()), index=list(courses_db.keys()).index(st.session_state._course_seen) if st.session_state._course_seen in courses_db else 0)
 
     if st.session_state.get("_course_seen") != course_topic:
         st.session_state["_course_seen"] = course_topic
@@ -267,6 +336,7 @@ def render_trainer():
                 if correct_count == 3:
                     st.session_state.module_phase = "test"
                     st.session_state.flash = "Допуск получен! Успешной сдачи основного экзамена."
+                    save_user_progress() # Автосохранение
                     st.rerun()
                 else:
                     st.error(f"Мини-тест не пройден ({correct_count} из 3). Внимательно перечитайте теорию и попробуйте снова.")
@@ -295,7 +365,6 @@ def render_trainer():
         if submitted:
             check_quiz(course_topic, cur, total, questions, qkey)
 
-
 def check_quiz(course_topic, cur, total, questions, qkey):
     answers = []
     for i, q in enumerate(questions, 1):
@@ -306,201 +375,3 @@ def check_quiz(course_topic, cur, total, questions, qkey):
         answers.append(selected_options)
 
     missing = [str(i) for i, a in enumerate(answers, 1) if not a]
-    if missing:
-        st.warning("Ответьте на все вопросы. Нет ответа на: " + ", ".join(missing))
-        return
-
-    attempt_key = f"{course_topic}:{cur}:main"
-    attempts = st.session_state.attempts.get(attempt_key, 0) + 1
-    st.session_state.attempts[attempt_key] = attempts
-
-    results = []
-    for q, answer_list in zip(questions, answers):
-        correct_indices = q["Правильные_варианты"]
-        correct_texts = [q["Варианты"][idx - 1] for idx in correct_indices]
-        
-        is_correct = set(answer_list) == set(correct_texts)
-        results.append((is_correct, "\n- ".join([""] + correct_texts), q.get("Пояснение", "")))
-
-    score = sum(ok for ok, _, _ in results)
-    required = math.ceil(len(questions) * PASS_RATIO)
-
-    if score >= required:
-        st.session_state.flash = f"✅ Модуль {cur} пройден: {score} из {len(questions)}."
-        if cur >= total:
-            st.session_state.course_passed = True
-        else:
-            st.session_state.current_module += 1
-            st.session_state.module_phase = "theory" # Сбрасываем фазу для следующего модуля
-        st.rerun()
-
-    st.markdown(f"### Результат: {score} из {len(questions)}")
-    for i, (ok, correct_texts_str, explanation) in enumerate(results, 1):
-        if ok:
-            st.success(f"Вопрос {i}: верно.")
-        else:
-            text = f"Вопрос {i}: неверно."
-            if attempts >= SHOW_ANSWER_AFTER_ATTEMPTS:
-                text += f"\n\n**Правильные ответы:** {correct_texts_str}"
-                if explanation:
-                    text += f"\n\n{explanation}"
-            st.error(text)
-    st.info("Исправьте неверные ответы и нажмите «Проверить ответы» ещё раз.")
-
-
-def render_certificate(course_topic: str):
-    flash = st.session_state.pop("flash", None)
-    if flash:
-        st.success(flash)
-    st.success("🎉 Вы успешно завершили все модули курса.")
-    student_name = st.text_input(
-        "Имя и фамилия для сертификата:", placeholder="Например: Азамат Сериков"
-    ).strip()
-
-    if student_name:
-        try:
-            pdf_bytes = build_certificate(
-                course_topic, student_name, datetime.now().strftime("%d.%m.%Y")
-            )
-            safe_name = re.sub(r"[^\w\-]+", "_", student_name)
-            st.download_button(
-                "📥 Скачать сертификат (PDF)",
-                data=pdf_bytes,
-                file_name=f"Certificate_{safe_name}.pdf",
-                mime="application/pdf",
-            )
-        except FileNotFoundError as e:
-            st.error(f"Не удалось создать сертификат: {e}")
-    else:
-        st.info("👆 Введите имя, чтобы появилась кнопка скачивания.")
-
-    st.divider()
-    if st.button("Начать новый курс"):
-        reset_progress()
-        st.rerun()
-
-
-# ---------------------------------------------------------------------
-# РЕЖИМ 2: АУДИТ / АРРФР (GEMINI)
-# ---------------------------------------------------------------------
-@st.cache_resource(ttl=DOCS_TTL_SECONDS, show_spinner="Синхронизация документов...")
-def upload_documents():
-    files = []
-    for path in sorted(glob.glob("*.pdf")):
-        f = genai.upload_file(path=path)
-        while f.state.name == "PROCESSING":
-            time.sleep(2)
-            f = genai.get_file(f.name)
-        if f.state.name == "ACTIVE":
-            files.append(f)
-        else:
-            st.warning(f"Файл {path} не обработан (статус {f.state.name}).")
-    return files
-
-
-def build_contents(doc_files, messages):
-    contents = []
-    if doc_files:
-        contents.append({"role": "user", "parts": [*doc_files, "Это нормативная база. Опирайся на неё."]})
-        contents.append({"role": "model", "parts": ["Принято."]})
-    for m in messages[-MAX_HISTORY_MESSAGES:]:
-        role = "user" if m["role"] == "user" else "model"
-        contents.append({"role": role, "parts": [m["content"]]})
-    return contents
-
-
-def render_online(task_mode: str):
-    st.title("🛡️ ИИ-Агент по AML Комплаенсу (РК)")
-
-    try:
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    except KeyError:
-        st.error("API-ключ `GEMINI_API_KEY` не найден в secrets.")
-        st.stop()
-
-    model_name = st.secrets.get("GEMINI_MODEL", "gemini-1.5-pro")
-    st.sidebar.success("API ключ подключен 🟢")
-    st.sidebar.caption(f"Модель: {model_name}")
-
-    st.subheader("📂 Нормативная база")
-    try:
-        doc_files = upload_documents()
-    except Exception as e:
-        st.error(f"Ошибка загрузки документов: {e}")
-        doc_files = []
-    if doc_files:
-        st.success(f"Документов в памяти ИИ: {len(doc_files)}")
-    else:
-        st.info("Нет PDF-файлов. Положите их в корень репозитория.")
-
-    try:
-        with open(MEMORY_PATH, "r", encoding="utf-8") as f:
-            long_term_memory = f.read()
-    except FileNotFoundError:
-        long_term_memory = ""
-
-    mode_instructions = (
-        "Твоя задача — аудит ПВК. Ищи риски, уязвимости и несоответствия законам РК. "
-        "Предлагай конкретные формулировки."
-        if task_mode == "Аудит ПВК и регламентов"
-        else "Твоя задача — подготовка ответа для АРРФР. Защищай интересы МФО, ссылайся на нормы права, "
-             "пиши в строгом деловом стиле."
-    )
-    system_instruction = (
-        "Ты — ведущий ИИ-методолог по AML в Казахстане.\n"
-        f"{long_term_memory}\n"
-        f"ТЕКУЩАЯ ЗАДАЧА: {mode_instructions}\n"
-        "ПРАВИЛА: ссылайся на конкретные документы и статьи из загруженной базы. "
-        "Если нормы нет в базе или ты не уверен в ней — прямо скажи об этом, не выдумывай номера статей и цитаты. "
-        "В конце отмечай, что вывод требует проверки ответственным сотрудником."
-    )
-
-    st.divider()
-    st.subheader(f"💬 Рабочий чат ({task_mode})")
-
-    if st.sidebar.button("🧹 Очистить чат"):
-        st.session_state.messages = []
-        st.rerun()
-
-    for m in st.session_state.messages:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
-
-    if prompt := st.chat_input("Опишите задачу или вставьте выдержку из документа..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            with st.spinner("Анализирую..."):
-                try:
-                    model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
-                    response = model.generate_content(build_contents(doc_files, st.session_state.messages))
-                    text = response.text
-                except ValueError:
-                    text = "⚠️ Модель не вернула текст (возможно, сработал фильтр). Переформулируйте запрос."
-                except Exception as e:
-                    text = f"⚠️ Ошибка API: {e}"
-            st.markdown(text)
-        st.session_state.messages.append({"role": "assistant", "content": text})
-
-
-# ---------------------------------------------------------------------
-# ТОЧКА ВХОДА
-# ---------------------------------------------------------------------
-with st.sidebar:
-    st.header("⚙️ Настройки и Статус")
-    task_mode = st.selectbox(
-        "Режим работы:",
-        ("🎓 Обучающий тренажер (Офлайн)", "Аудит ПВК и регламентов", "Ответ на запрос/жалобу АРРФР"),
-    )
-    st.divider()
-
-if st.session_state.get("_mode_seen") != task_mode:
-    st.session_state["_mode_seen"] = task_mode
-    st.session_state.messages = []
-
-if task_mode.startswith("🎓"):
-    render_trainer()
-else:
-    render_online(task_mode)
