@@ -37,7 +37,7 @@ PROGRESS_PATH = "progress.json"
 MEMORY_PATH = "rules_and_memory.txt"
 
 PASS_RATIO = 1.0                
-MAX_ATTEMPTS = 5 # Количество попыток для сдачи
+MAX_ATTEMPTS = 5 
 MAX_HISTORY_MESSAGES = 12       
 DOCS_TTL_SECONDS = 40 * 3600    
 PROGRESS_TTL_SECONDS = 24 * 3600 
@@ -160,14 +160,12 @@ def build_certificate(course_name: str, student_name: str, date_str: str) -> byt
 DEFAULTS = {
     "messages": [],
     "current_module": 1,
-    "module_phase": "theory", # 'theory', 'test', 'failed'
+    "module_phase": "theory", 
     "course_passed": False,
     "attempts": {},
     "student_name": None,
     "_course_seen": None,
-    "failed_score": 0,
-    "failed_total": 0,
-    "failed_details": [] # Для сохранения детализации последней попытки
+    "failed_topic_stats": {} # Сохранение статистики по темам при провале
 }
 for key, value in DEFAULTS.items():
     st.session_state.setdefault(key, value)
@@ -195,9 +193,7 @@ def save_user_progress():
         "current_module": st.session_state.current_module,
         "module_phase": st.session_state.module_phase,
         "course_passed": st.session_state.course_passed,
-        "failed_score": st.session_state.failed_score,
-        "failed_total": st.session_state.failed_total,
-        "failed_details": st.session_state.failed_details,
+        "failed_topic_stats": st.session_state.failed_topic_stats,
         "timestamp": time.time()
     }
     with open(PROGRESS_PATH, "w", encoding="utf-8") as f:
@@ -214,9 +210,7 @@ def load_user_progress(student_name: str) -> bool:
         st.session_state.current_module = user_data.get("current_module", 1)
         st.session_state.module_phase = user_data.get("module_phase", "theory")
         st.session_state.course_passed = user_data.get("course_passed", False)
-        st.session_state.failed_score = user_data.get("failed_score", 0)
-        st.session_state.failed_total = user_data.get("failed_total", 0)
-        st.session_state.failed_details = user_data.get("failed_details", [])
+        st.session_state.failed_topic_stats = user_data.get("failed_topic_stats", {})
         return True
     return False
 
@@ -224,9 +218,7 @@ def reset_progress(clear_user=False):
     st.session_state.current_module = 1
     st.session_state.module_phase = "theory"
     st.session_state.course_passed = False
-    st.session_state.failed_score = 0
-    st.session_state.failed_total = 0
-    st.session_state.failed_details = []
+    st.session_state.failed_topic_stats = {}
     st.session_state.attempts = {}
     st.session_state.pop("flash", None)
     for k in [k for k in st.session_state if str(k).startswith("q_") or str(k).startswith("mini_")]:
@@ -393,26 +385,21 @@ def render_trainer():
     elif st.session_state.module_phase == "failed":
         st.error("❌ Модуль заблокирован (не сдан).")
         st.markdown(f"Вы исчерпали все {MAX_ATTEMPTS} попыток для сдачи теста.")
+        st.divider()
         
-        pct = int((st.session_state.failed_score / st.session_state.failed_total) * 100) if st.session_state.failed_total > 0 else 0
+        st.markdown("### Анализ результатов по темам:")
+        st.info("Обратите внимание на темы с наименьшим процентом. Вам необходимо тщательно изучить их при повторном прохождении курса.")
         
-        # Аккуратный текстовый вывод вместо гигантского метрика
-        st.markdown(f"### Итоговый результат: {pct}% ({st.session_state.failed_score} из {st.session_state.failed_total} правильных ответов)")
+        # Вывод статистики по темам
+        for topic, stats in st.session_state.failed_topic_stats.items():
+            correct = stats["correct"]
+            total = stats["total"]
+            pct = int((correct / total) * 100) if total > 0 else 0
+            
+            st.markdown(f"**{topic}**: {pct}% ({correct} правильно из {total} вопросов)")
+            st.progress(pct / 100.0)
         
         st.divider()
-        st.markdown("#### Детализация последней попытки:")
-        
-        for i, det in enumerate(st.session_state.failed_details, 1):
-            if det["is_correct"]:
-                st.success(f"**Вопрос {i}:** {det['question']} — **Верно**")
-            else:
-                text = f"**Вопрос {i}:** {det['question']} — **Неверно**"
-                text += f"\n\n**Правильные ответы:** {det['correct_answers']}"
-                if det["explanation"]:
-                    text += f"\n\n*Пояснение:* {det['explanation']}"
-                st.error(text)
-        
-        st.info("Вам необходимо начать изучение курса заново.")
         if st.button("🔄 Начать курс заново", use_container_width=True):
             reset_progress(clear_user=False)
             st.rerun()
@@ -439,11 +426,10 @@ def check_quiz(course_topic, cur, total, questions, qkey):
     for q, answer_list in zip(questions, answers):
         correct_indices = q["Правильные_варианты"]
         correct_texts = [q["Варианты"][idx - 1] for idx in correct_indices]
-        
         is_correct = set(answer_list) == set(correct_texts)
-        results.append((is_correct, "\n- ".join([""] + correct_texts), q.get("Пояснение", "")))
+        results.append((is_correct, q.get("Тематика", "Общие вопросы")))
 
-    score = sum(ok for ok, _, _ in results)
+    score = sum(ok for ok, _ in results)
     required = math.ceil(len(questions) * PASS_RATIO)
 
     if score >= required:
@@ -458,20 +444,17 @@ def check_quiz(course_topic, cur, total, questions, qkey):
     else:
         if attempts >= MAX_ATTEMPTS:
             st.session_state.module_phase = "failed"
-            st.session_state.failed_score = score
-            st.session_state.failed_total = len(questions)
             
-            # Сохраняем детализацию последней попытки
-            details = []
-            for i, (ok, correct_texts_str, explanation) in enumerate(results, 1):
-                q_text = questions[i-1]["Вопрос"]
-                details.append({
-                    "question": q_text,
-                    "is_correct": ok,
-                    "correct_answers": correct_texts_str,
-                    "explanation": explanation
-                })
-            st.session_state.failed_details = details
+            # Собираем статистику по темам
+            topic_stats = {}
+            for q, (ok, topic) in zip(questions, results):
+                if topic not in topic_stats:
+                    topic_stats[topic] = {"correct": 0, "total": 0}
+                topic_stats[topic]["total"] += 1
+                if ok:
+                    topic_stats[topic]["correct"] += 1
+                    
+            st.session_state.failed_topic_stats = topic_stats
             
             save_user_progress()
             st.rerun()
@@ -479,11 +462,14 @@ def check_quiz(course_topic, cur, total, questions, qkey):
             
         st.markdown(f"### Результат: {score} из {len(questions)}")
         st.warning(f"Осталось попыток: {MAX_ATTEMPTS - attempts}")
-        for i, (ok, correct_texts_str, explanation) in enumerate(results, 1):
+        
+        # Показываем только номера правильных/неправильных вопросов без подсказок
+        for i, (ok, _) in enumerate(results, 1):
             if ok:
                 st.success(f"Вопрос {i}: верно.")
             else:
                 st.error(f"Вопрос {i}: неверно.")
+                
         st.info("Исправьте неверные ответы и нажмите «Проверить ответы» ещё раз.")
 
 def render_certificate(course_topic: str):
