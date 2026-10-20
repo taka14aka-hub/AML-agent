@@ -37,7 +37,7 @@ PROGRESS_PATH = "progress.json"
 MEMORY_PATH = "rules_and_memory.txt"
 
 PASS_RATIO = 1.0                
-MAX_ATTEMPTS = 5 # Новое количество попыток для сдачи
+MAX_ATTEMPTS = 5 # Количество попыток для сдачи
 MAX_HISTORY_MESSAGES = 12       
 DOCS_TTL_SECONDS = 40 * 3600    
 PROGRESS_TTL_SECONDS = 24 * 3600 
@@ -166,7 +166,8 @@ DEFAULTS = {
     "student_name": None,
     "_course_seen": None,
     "failed_score": 0,
-    "failed_total": 0
+    "failed_total": 0,
+    "failed_details": [] # Для сохранения детализации последней попытки
 }
 for key, value in DEFAULTS.items():
     st.session_state.setdefault(key, value)
@@ -196,6 +197,7 @@ def save_user_progress():
         "course_passed": st.session_state.course_passed,
         "failed_score": st.session_state.failed_score,
         "failed_total": st.session_state.failed_total,
+        "failed_details": st.session_state.failed_details,
         "timestamp": time.time()
     }
     with open(PROGRESS_PATH, "w", encoding="utf-8") as f:
@@ -214,6 +216,7 @@ def load_user_progress(student_name: str) -> bool:
         st.session_state.course_passed = user_data.get("course_passed", False)
         st.session_state.failed_score = user_data.get("failed_score", 0)
         st.session_state.failed_total = user_data.get("failed_total", 0)
+        st.session_state.failed_details = user_data.get("failed_details", [])
         return True
     return False
 
@@ -223,6 +226,7 @@ def reset_progress(clear_user=False):
     st.session_state.course_passed = False
     st.session_state.failed_score = 0
     st.session_state.failed_total = 0
+    st.session_state.failed_details = []
     st.session_state.attempts = {}
     st.session_state.pop("flash", None)
     for k in [k for k in st.session_state if str(k).startswith("q_") or str(k).startswith("mini_")]:
@@ -390,9 +394,23 @@ def render_trainer():
         st.error("❌ Модуль заблокирован (не сдан).")
         st.markdown(f"Вы исчерпали все {MAX_ATTEMPTS} попыток для сдачи теста.")
         
-        # Показываем только процент правильных ответов
         pct = int((st.session_state.failed_score / st.session_state.failed_total) * 100) if st.session_state.failed_total > 0 else 0
-        st.metric(label="Итоговый результат по тематике модуля", value=f"{pct}% правильных ответов")
+        
+        # Аккуратный текстовый вывод вместо гигантского метрика
+        st.markdown(f"### Итоговый результат: {pct}% ({st.session_state.failed_score} из {st.session_state.failed_total} правильных ответов)")
+        
+        st.divider()
+        st.markdown("#### Детализация последней попытки:")
+        
+        for i, det in enumerate(st.session_state.failed_details, 1):
+            if det["is_correct"]:
+                st.success(f"**Вопрос {i}:** {det['question']} — **Верно**")
+            else:
+                text = f"**Вопрос {i}:** {det['question']} — **Неверно**"
+                text += f"\n\n**Правильные ответы:** {det['correct_answers']}"
+                if det["explanation"]:
+                    text += f"\n\n*Пояснение:* {det['explanation']}"
+                st.error(text)
         
         st.info("Вам необходимо начать изучение курса заново.")
         if st.button("🔄 Начать курс заново", use_container_width=True):
@@ -438,11 +456,23 @@ def check_quiz(course_topic, cur, total, questions, qkey):
         save_user_progress() 
         st.rerun()
     else:
-        # Если исчерпаны все попытки, блокируем модуль
         if attempts >= MAX_ATTEMPTS:
             st.session_state.module_phase = "failed"
             st.session_state.failed_score = score
             st.session_state.failed_total = len(questions)
+            
+            # Сохраняем детализацию последней попытки
+            details = []
+            for i, (ok, correct_texts_str, explanation) in enumerate(results, 1):
+                q_text = questions[i-1]["Вопрос"]
+                details.append({
+                    "question": q_text,
+                    "is_correct": ok,
+                    "correct_answers": correct_texts_str,
+                    "explanation": explanation
+                })
+            st.session_state.failed_details = details
+            
             save_user_progress()
             st.rerun()
             return
