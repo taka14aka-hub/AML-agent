@@ -28,8 +28,8 @@ st.markdown(
 # ---------------------------------------------------------------------
 FONT_CANDIDATES = ["Roboto_Condensed-Regular.ttf"]
 FONT_PATH = next((p for p in FONT_CANDIDATES if os.path.exists(p)), FONT_CANDIDATES[0])
-COURSES_PATH = os.path.join("data", "courses.json")
-PROGRESS_PATH = os.path.join("data", "progress.json")
+COURSES_PATH = "courses.json"
+PROGRESS_PATH = "progress.json"
 MEMORY_PATH = "rules_and_memory.txt"
 
 PASS_RATIO = 1.0                
@@ -96,7 +96,7 @@ def load_courses_db():
         with open(COURSES_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        return None, f"Файл `{COURSES_PATH}` не найден. Убедитесь, что он лежит в папке data."
+        return None, f"Файл `{COURSES_PATH}` не найден. Убедитесь, что он находится в одной папке со скриптом app.py."
     except json.JSONDecodeError as e:
         return None, f"Ошибка JSON в `{COURSES_PATH}`: {e}"
 
@@ -178,7 +178,10 @@ def save_user_progress():
     if not st.session_state.student_name:
         return
     
-    os.makedirs(os.path.dirname(PROGRESS_PATH), exist_ok=True)
+    dir_name = os.path.dirname(PROGRESS_PATH)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+        
     prog = get_all_progress()
     prog[st.session_state.student_name] = {
         "course_topic": st.session_state._course_seen,
@@ -227,7 +230,6 @@ def render_login():
     
     st.write("") 
     
-    # Визуальная панель авторизации
     with st.container(border=True):
         st.subheader("👤 Авторизация ученика")
         st.markdown("Введите ваши данные для старта обучения и автоматической генерации сертификата в конце.")
@@ -239,7 +241,6 @@ def render_login():
                 help="Это имя будет указано в итоговом сертификате."
             )
             
-            # Акцентная кнопка на всю ширину
             submitted = st.form_submit_button("🚀 Начать обучение", type="primary", use_container_width=True)
             
             if submitted:
