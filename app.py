@@ -111,7 +111,6 @@ def load_courses_db():
     return data, None
 
 def get_topic_for_question(q_text: str, q_dict: dict) -> str:
-    """Определяет тематику вопроса, если она не задана в JSON явно."""
     if "Тематика" in q_dict:
         return q_dict["Тематика"]
     
@@ -407,7 +406,6 @@ def render_trainer():
         st.markdown("### Анализ результатов по темам:")
         st.info("Обратите внимание на темы с наименьшим процентом. Вам необходимо тщательно изучить их при повторном прохождении курса.")
         
-        # Вывод статистики по темам в требуемом формате
         for topic, stats in st.session_state.failed_topic_stats.items():
             correct = stats["correct"]
             total_topic = stats["total"]
@@ -445,7 +443,6 @@ def check_quiz(course_topic, cur, total, questions, qkey):
         correct_texts = [q["Варианты"][idx - 1] for idx in correct_indices]
         is_correct = set(answer_list) == set(correct_texts)
         
-        # Получаем тематику из JSON или через автоклассификатор
         topic = get_topic_for_question(q["Вопрос"], q)
         results.append((is_correct, topic))
 
@@ -465,7 +462,6 @@ def check_quiz(course_topic, cur, total, questions, qkey):
         if attempts >= MAX_ATTEMPTS:
             st.session_state.module_phase = "failed"
             
-            # Собираем статистику по темам для экрана провала
             topic_stats = {}
             for q, (ok, topic) in zip(questions, results):
                 if topic not in topic_stats:
@@ -480,17 +476,10 @@ def check_quiz(course_topic, cur, total, questions, qkey):
             st.rerun()
             return
             
-        st.markdown(f"### Результат: {score} из {len(questions)}")
+        # Убраны детальные подсказки. Просто выводим сообщение об ошибке.
+        st.error("❌ Тест не пройден. В ваших ответах есть ошибки.")
         st.warning(f"Осталось попыток: {MAX_ATTEMPTS - attempts}")
-        
-        # Показываем только номера правильных/неправильных вопросов без подсказок
-        for i, (ok, _) in enumerate(results, 1):
-            if ok:
-                st.success(f"Вопрос {i}: верно.")
-            else:
-                st.error(f"Вопрос {i}: неверно.")
-                
-        st.info("Исправьте неверные ответы и нажмите «Проверить ответы» ещё раз.")
+        st.info("Пожалуйста, пересмотрите свои ответы и нажмите «Проверить ответы» ещё раз.")
 
 def render_certificate(course_topic: str):
     flash = st.session_state.pop("flash", None)
